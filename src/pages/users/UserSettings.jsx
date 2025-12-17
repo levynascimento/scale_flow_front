@@ -139,8 +139,8 @@ export default function UserSettings() {
 
         try {
             const role = roles.find(r => r.slug === newRole);
-
             await addUserHability(role.name, parsedLevel);
+
             toast.success("Habilidade adicionada!");
 
             const habs = await getUserHabilities();
@@ -152,7 +152,6 @@ export default function UserSettings() {
 
             setNewRole("");
             setNewLevel("");
-
         } catch {
             toast.error("Erro ao adicionar habilidade.");
         }
@@ -190,7 +189,6 @@ export default function UserSettings() {
         }
     }
 
-    // ------------------------------------------
     if (!user) return <div className="p-8 text-gray-300">Carregando...</div>;
 
     return (
@@ -240,9 +238,58 @@ export default function UserSettings() {
             </div>
 
             {/* HABILIDADES */}
-            <div className="bg-sf-card p-6 rounded-xl border border-sf-border space-y-4">
+            <div className="bg-sf-card p-6 rounded-xl border border-sf-border space-y-6">
                 <h2 className="text-xl font-semibold">Minhas Habilidades</h2>
 
+                {/* ADICIONAR HABILIDADE */}
+                <div className="flex flex-wrap gap-4 items-end">
+
+                    {/* PAPEL */}
+                    <div className="flex flex-col gap-1">
+                        <label className="text-sm text-gray-400 h-5">
+                            Papel
+                        </label>
+                        <select
+                            value={newRole}
+                            onChange={(e) => setNewRole(e.target.value)}
+                            className="px-3 py-2 rounded-lg bg-sf-surface border border-sf-border"
+                        >
+                            <option value="">Selecione</option>
+                            {roles.map(r => (
+                                <option
+                                    key={r.id}
+                                    value={r.slug}
+                                    disabled={habilities.some(h => h.roleSlug === r.slug)}
+                                >
+                                    {r.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+
+                    {/* NÍVEL */}
+                    <div className="flex flex-col gap-1">
+                        <label className="text-sm text-gray-400 h-5">
+                            Nível (0–10)
+                        </label>
+                        <Input
+                            type="number"
+                            className="w-32"
+                            value={newLevel}
+                            onChange={(e) => setNewLevel(e.target.value)}
+                        />
+                    </div>
+
+                    {/* BOTÃO */}
+                    <Button
+                        className="bg-sf-primary hover:bg-sf-primary/80 h-[42px]"
+                        onClick={handleAddHability}
+                    >
+                        Adicionar
+                    </Button>
+                </div>
+
+                {/* LISTA */}
                 <div className="space-y-4">
                     {habilities.length === 0 && (
                         <p className="text-gray-400">Você ainda não cadastrou habilidades.</p>
@@ -263,31 +310,21 @@ export default function UserSettings() {
                                     className="w-24"
                                     value={levelInputs[h.roleSlug] ?? ""}
                                     onChange={(e) => {
-                                        let val = e.target.value;
-
-                                        if (val === "") {
-                                            setLevelInputs(prev => ({ ...prev, [h.roleSlug]: "" }));
-                                            return;
-                                        }
-
-                                        if (/^\d{1,2}$/.test(val)) {
+                                        const val = e.target.value;
+                                        if (val === "" || /^\d{1,2}$/.test(val)) {
                                             setLevelInputs(prev => ({ ...prev, [h.roleSlug]: val }));
                                         }
                                     }}
                                     onBlur={() => {
                                         const raw = levelInputs[h.roleSlug];
-                                        if (raw === "") {
-                                            setLevelInputs(prev => ({ ...prev, [h.roleSlug]: h.level.toString() }));
-                                            return;
-                                        }
-
                                         const nivel = Number(raw);
-                                        if (nivel < 0 || nivel > 10) {
-                                            toast.error("Informe um nível válido (0 a 10).");
-                                            setLevelInputs(prev => ({ ...prev, [h.roleSlug]: h.level.toString() }));
+                                        if (raw === "" || nivel < 0 || nivel > 10) {
+                                            setLevelInputs(prev => ({
+                                                ...prev,
+                                                [h.roleSlug]: h.level.toString()
+                                            }));
                                             return;
                                         }
-
                                         handleUpdate(nivel, h.roleSlug);
                                     }}
                                 />
@@ -316,7 +353,6 @@ export default function UserSettings() {
                 </Button>
             </div>
 
-            {/* CONFIRM DIALOG */}
             <ConfirmDialog
                 open={confirmOpen}
                 title="Deletar Conta"
