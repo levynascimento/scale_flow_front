@@ -3,6 +3,11 @@ import { getBandById, getBandMembers } from "../../services/bandApi";
 import { getBandMusics } from "../../services/musicApi";
 import { getBandEvents } from "../../services/eventApi";
 
+import EventViewModal from "../events/EventViewModal.jsx";
+import EventEscalationModal from "../events/EventEscalationModal.jsx";
+import { getBandIntegrants } from "../../services/integrantsApi.js";
+import { getRoles } from "../../services/rolesApi.js";
+
 export default function BandHome() {
     const bandId = localStorage.getItem("bandId");
     const role = localStorage.getItem("bandRole");
@@ -16,6 +21,14 @@ export default function BandHome() {
     const [events, setEvents] = useState([]);
 
     const [loading, setLoading] = useState(true);
+
+    // MODAIS
+    const [selectedEvent, setSelectedEvent] = useState(null);
+    const [openEscalation, setOpenEscalation] = useState(false);
+    const [escalationEvent, setEscalationEvent] = useState(null);
+
+    const [allIntegrants, setAllIntegrants] = useState([]);
+    const [allRoles, setAllRoles] = useState([]);
 
     // =================================================
     // LOAD INICIAL
@@ -39,6 +52,12 @@ export default function BandHome() {
                 const eventsResp = await getBandEvents(bandId);
                 setEvents(eventsResp);
 
+                const integrants = await getBandIntegrants(bandId);
+                const roles = await getRoles();
+
+                setAllIntegrants(integrants);
+                setAllRoles(roles);
+
             } catch (err) {
                 console.error("Erro ao carregar BandHome:", err);
             } finally {
@@ -58,29 +77,6 @@ export default function BandHome() {
             .filter(e => new Date(e.startingTime) > now)
             .sort((a, b) => new Date(a.startingTime) - new Date(b.startingTime))[0];
     }, [events]);
-
-    // =================================================
-    // STATUS DA ESCALA
-    // =================================================
-    let scaleStatus = null;
-    let missingRoles = 0;
-
-    if (nextEvent) {
-        if (!nextEvent.escalationsCount || nextEvent.escalationsCount === 0) {
-            scaleStatus = "none";
-        } else if (
-            nextEvent.lineupId &&
-            nextEvent.lineupRolesCount &&
-            nextEvent.escalationsCount < nextEvent.lineupRolesCount
-        ) {
-            scaleStatus = "incomplete";
-            missingRoles =
-                nextEvent.lineupRolesCount -
-                nextEvent.escalationsCount;
-        } else {
-            scaleStatus = "complete";
-        }
-    }
 
     // =================================================
     // EVENTOS DO USUÁRIO (MEMBER)
@@ -120,10 +116,7 @@ export default function BandHome() {
     // =================================================
     return (
         <div className="space-y-8">
-            {/* HEADER */}
-            <h1 className="text-3xl font-bold">
-                {band.name}
-            </h1>
+            <h1 className="text-3xl font-bold">{band.name}</h1>
 
             {/* VISÃO GERAL */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -131,31 +124,29 @@ export default function BandHome() {
                 <StatCard label="Integrantes" value={membersCount} />
                 <StatCard
                     label="Eventos futuros"
-                    value={
-                        events.filter(
-                            e => new Date(e.startingTime) > new Date()
-                        ).length
-                    }
+                    value={events.filter(e => new Date(e.startingTime) > new Date()).length}
                 />
             </div>
 
             {/* CONTEXTO */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Próximo evento */}
-                <div className="bg-[#1f1f26] border border-[#2a2a30] rounded-xl p-4">
+                <div
+                    onClick={() => nextEvent && setSelectedEvent(nextEvent)}
+                    className={`
+                        bg-[#1f1f26] border border-[#2a2a30] rounded-xl p-4
+                        ${nextEvent ? "cursor-pointer hover:border-indigo-500 transition-colors" : ""}
+                    `}
+                >
                     <p className="text-sm text-indigo-400 mb-1">
                         Próximo evento
                     </p>
 
                     {nextEvent ? (
                         <>
-                            <p className="font-semibold">
-                                {nextEvent.name}
-                            </p>
+                            <p className="font-semibold">{nextEvent.name}</p>
                             <p className="text-sm text-gray-400">
-                                {new Date(
-                                    nextEvent.startingTime
-                                ).toLocaleString("pt-BR")}
+                                {new Date(nextEvent.startingTime).toLocaleString("pt-BR")}
                             </p>
                         </>
                     ) : (
@@ -164,45 +155,9 @@ export default function BandHome() {
                         </p>
                     )}
                 </div>
-
-                {/* Status da escala */}
-                <div className="bg-[#1f1f26] border border-[#2a2a30] rounded-xl p-4">
-                    <p className="text-sm text-indigo-400 mb-1">
-                        Escalação
-                    </p>
-
-                    {!nextEvent && (
-                        <p className="text-sm text-gray-400">—</p>
-                    )}
-
-                    {nextEvent && scaleStatus === "complete" && (
-                        <p className="text-green-400 font-medium">
-                            ✅ Escala completa
-                        </p>
-                    )}
-
-                    {nextEvent && scaleStatus === "incomplete" && (
-                        <>
-                            <p className="text-yellow-400 font-medium">
-                                ⚠️ Escala incompleta
-                            </p>
-                            {isAdmin && (
-                                <p className="text-sm text-gray-400">
-                                    {missingRoles} papéis pendentes
-                                </p>
-                            )}
-                        </>
-                    )}
-
-                    {nextEvent && scaleStatus === "none" && (
-                        <p className="text-red-400 font-medium">
-                            ❌ Nenhuma escala
-                        </p>
-                    )}
-                </div>
             </div>
 
-            {/* EVENTOS DO USUÁRIO (MEMBER) */}
+            {/* EVENTOS DO USUÁRIO */}
             {!isAdmin && (
                 <div className="bg-[#1f1f26] border border-[#2a2a30] rounded-xl p-4">
                     <p className="text-sm text-indigo-400 mb-2">
@@ -213,9 +168,7 @@ export default function BandHome() {
                         <ul className="space-y-1 text-sm">
                             {userEvents.map(e => {
                                 const esc = e.escalations.find(
-                                    es =>
-                                        String(es.user?.id) ===
-                                        String(userId)
+                                    es => String(es.user?.id) === String(userId)
                                 );
 
                                 return (
@@ -235,6 +188,34 @@ export default function BandHome() {
                     )}
                 </div>
             )}
+
+            {/* VIEW EVENT */}
+            <EventViewModal
+                open={!!selectedEvent}
+                event={selectedEvent}
+                isAdmin={isAdmin}
+                onClose={() => setSelectedEvent(null)}
+                onEdit={() => setSelectedEvent(null)}
+                onDelete={() => setSelectedEvent(null)}
+                onEscalation={(ev) => {
+                    setEscalationEvent(ev);
+                    setOpenEscalation(true);
+                }}
+                onUpdated={() => {
+                    getBandEvents(bandId).then(setEvents);
+                }}
+            />
+
+            {/* ESCALAÇÃO */}
+            <EventEscalationModal
+                open={openEscalation}
+                event={escalationEvent}
+                onClose={() => setOpenEscalation(false)}
+                allIntegrants={allIntegrants}
+                allRoles={allRoles}
+                editable={isAdmin}
+                onUpdated={() => getBandEvents(bandId).then(setEvents)}
+            />
         </div>
     );
 }
