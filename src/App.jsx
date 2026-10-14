@@ -20,71 +20,48 @@ import Roles from "./pages/roles/Roles.jsx"
 import UserSettings from "./pages/users/UserSettings.jsx";
 import BandSettings from "./pages/bands/BandSettings.jsx";
 
+/*
+ * ♻️ REFACTORING — Extract Method (protectedPage / adminOnly)
+ * Antes: o embrulho `<ProtectedRoute>...</ProtectedRoute>` e
+ * `<RequireAdmin>...</RequireAdmin>` era escrito à mão em cada rota
+ * (6 blocos de 5–7 linhas cada).
+ * Benefícios:
+ *   - Duplicação
+ *   + Legibilidade (a tabela de rotas cabe na tela)
+ *   + Consistência (impossível esquecer de proteger uma rota pela metade)
+ */
+function protectedPage(element) {
+    return <ProtectedRoute>{element}</ProtectedRoute>
+}
+
+function adminOnly(element) {
+    return <RequireAdmin>{element}</RequireAdmin>
+}
+
 export default function App() {
     return (
         <Routes>
-
             {/* público */}
             <Route path="/" element={<Navigate to="/auth/login" replace />} />
             <Route path="/auth/login" element={<Login />} />
             <Route path="/auth/register" element={<Register />} />
 
-            {/* CONFIGURAÇÕES DO USUÁRIO */}
-            <Route
-                path="/user/settings"
-                element={
-                    <ProtectedRoute>
-                        <UserSettings />
-                    </ProtectedRoute>
-                }
-            />
-
-            {/* seleção de bandas */}
-            <Route
-                path="/bands/select"
-                element={
-                    <ProtectedRoute>
-                        <BandSelect />
-                    </ProtectedRoute>
-                }
-            />
+            {/* usuário logado */}
+            <Route path="/user/settings" element={protectedPage(<UserSettings />)} />
+            <Route path="/bands/select" element={protectedPage(<BandSelect />)} />
 
             {/* layout da banda */}
-            <Route
-                path="/bands/:id"
-                element={
-                    <ProtectedRoute>
-                        <BandLayout />
-                    </ProtectedRoute>
-                }
-            >
+            <Route path="/bands/:id" element={protectedPage(<BandLayout />)}>
                 <Route path="home" element={<BandHome />} />
                 <Route path="repertoires" element={<Repertoires />} />
                 <Route path="repertoires/new" element={<RepertoireForm />} />
                 <Route path="repertoires/:musicId/edit" element={<RepertoireEdit />} />
-
                 <Route path="events" element={<Events />} />
                 <Route path="roles" element={<Roles />} />
 
-                {/* ✅ Lineups só para ADMIN */}
-                <Route
-                    path="lineups"
-                    element={
-                        <RequireAdmin>
-                            <Lineups />
-                        </RequireAdmin>
-                    }
-                />
-
-                {/* ✅ Configurações da Banda só para ADMIN */}
-                <Route
-                    path="settings"
-                    element={
-                        <RequireAdmin>
-                            <BandSettings />
-                        </RequireAdmin>
-                    }
-                />
+                {/* somente ADMIN */}
+                <Route path="lineups" element={adminOnly(<Lineups />)} />
+                <Route path="settings" element={adminOnly(<BandSettings />)} />
             </Route>
 
             <Route path="*" element={<Navigate to="/bands/select" replace />} />

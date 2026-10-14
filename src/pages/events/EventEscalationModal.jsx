@@ -1,73 +1,74 @@
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
-import Button from "../../components/Button";
-
-import {
-    getEscalations,
-    createEscalation,
-    deleteEscalation,
-    getPriorityList
-} from "../../services/escalationApi";
-
-import { getLineup } from "../../services/lineupApi";
 import { X, UserPlus, Trash2, Layers } from "lucide-react";
+import Button from "../../components/Button";
+import EscalationDraftForm from "./components/EscalationDraftForm.jsx";
+import { escalationService, lineupService } from "../../services/index.js";
+import { RoleService } from "../../services/RoleService.js";
+import { bandSession } from "../../core/session/BandSession.js";
+import { Escalation } from "../../domain/Escalation.js";
 
-function getCurrentBandId() {
-    return localStorage.getItem("bandId");
-}
+const EMPTY_DRAFT = { roleId: "", userId: "" };
+
+/*
+ * ♻️ REFACTORING — Inline Method (getCurrentBandId)
+ * Antes: o arquivo começava com
+ *   function getCurrentBandId() { return localStorage.getItem("bandId"); }
+ * uma função cujo corpo era tão claro quanto o nome, usada uma única vez.
+ * Agora: a chamada foi substituída por `bandSession.bandId`.
+ * Benefícios:
+ *   - Indireção desnecessária
+ *   - Acoplamento (com localStorage)
+ *   + Legibilidade
+ */
 
 export default function EventEscalationModal({
-                                                 open,
-                                                 event,
-                                                 editable = false,
-                                                 onClose,
-                                                 allIntegrants = [],
-                                                 allRoles = [],
-                                                 onUpdated,
-                                             }) {
+    open,
+    event,
+    editable = false,
+    onClose,
+    allIntegrants = [],
+    allRoles = [],
+    onUpdated,
+}) {
     const [loading, setLoading] = useState(true);
     const [escalations, setEscalations] = useState([]);
     const [suggestedLineup, setSuggestedLineup] = useState(null);
-
-    // sugestões vindas da formação (cada item vira "quase" um formulário)
     const [pendingEscalations, setPendingEscalations] = useState([]);
 
-    const [adding, setAdding] = useState(false);
-    const [selectedRole, setSelectedRole] = useState("");
-    const [selectedIntegrant, setSelectedIntegrant] = useState("");
+    /*
+     * ♻️ REFACTORING — Inline Variable (adding / selectedRole / selectedIntegrant)
+     * Antes: 3 estados (adding: boolean, selectedRole, selectedIntegrant)
+     * que sempre eram resetados juntos.
+     * Agora: um só, `manualDraft`. Se for null, não está adicionando; o
+     * boolean `adding` deixou de existir porque era derivável.
+     * Benefícios:
+     *   - Estado redundante
+     *   + Consistência (impossível ficar "adicionando" sem rascunho)
+     *   + Legibilidade
+     */
+    const [manualDraft, setManualDraft] = useState(null);
 
     const [priorityCache, setPriorityCache] = useState({});
 
-    const escalationsSorted = useMemo(() => {
-        const copy = Array.isArray(escalations) ? [...escalations] : [];
-        // ordenação simples: por role, depois por nome (se existir)
-        copy.sort((a, b) => {
-            const ra = a?.role?.name || "";
-            const rb = b?.role?.name || "";
-            if (ra.localeCompare(rb) !== 0) return ra.localeCompare(rb);
-
-            const ua = a?.user?.name || "";
-            const ub = b?.user?.name || "";
-            return ua.localeCompare(ub);
-        });
-        return copy;
-    }, [escalations]);
+    /*
+     * ♻️ REFACTORING — Move Method (ordenação → Escalation.sortByRoleThenUser)
+     * Antes: 12 linhas de comparação inline no useMemo.
+     * Benefícios: + Legibilidade  + Coesão  + Testabilidade
+     */
+    const escalationsSorted = useMemo(() => Escalation.sortByRoleThenUser(escalations), [escalations]);
 
     async function loadData() {
         if (!event) return;
 
         try {
             setLoading(true);
-
-            const data = await getEscalations(event.id);
+            const [data, lineup] = await Promise.all([
+                escalationService.listByEvent(event.id),
+                event.lineupId ? lineupService.getById(event.lineupId) : null
+            ]);
             setEscalations(Array.isArray(data) ? data : []);
-
-            if (event.lineupId) {
-                const lineup = await getLineup(event.lineupId);
-                setSuggestedLineup(lineup);
-            } else {
-                setSuggestedLineup(null);
-            }
+            setSuggestedLineup(lineup);
         } catch (err) {
             console.error(err);
             toast.error("Erro ao carregar escalações.");
@@ -78,9 +79,7 @@ export default function EventEscalationModal({
 
     useEffect(() => {
         if (open) {
-            setAdding(false);
-            setSelectedRole("");
-            setSelectedIntegrant("");
+            setManualDraft(null);
             setPendingEscalations([]);
             loadData();
         }
@@ -89,153 +88,121 @@ export default function EventEscalationModal({
     async function loadPriority(roleId) {
         if (!roleId || priorityCache[roleId]) return;
 
-        const bandId = getCurrentBandId();
-        if (!bandId) return;
-
-        const role = allRoles.find(r => String(r.id) === String(roleId));
-        if (!role?.slug) return;
+        const bandId = bandSession.bandId;
+        const role = RoleService.findById(allRoles, roleId);
+        if (!bandId || !role?.slug) return;
 
         try {
-            const data = await getPriorityList(role.slug, bandId);
-
-            setPriorityCache(prev => ({
-                ...prev,
-                [roleId]: data
-            }));
+            const data = await escalationService.getPriorityList(role.slug, bandId);
+            setPriorityCache(prev => ({ ...prev, [roleId]: data }));
         } catch (err) {
             console.error(err);
         }
     }
 
-    function getPriorityOnlyIntegrants(roleId) {
-        if (!roleId || !priorityCache[roleId]) return [];
+    /*
+     * ♻️ REFACTORING — Change Function Declaration (getPriorityOnlyIntegrants → integrantsAllowedFor)
+     * Antes: o nome falava de "priority only", mas o que a função devolve é a
+     * lista de integrantes que podem ocupar aquele papel.
+     * Benefícios: + Legibilidade (nome revela a intenção)
+     */
+    function integrantsAllowedFor(roleId) {
+        const priorityList = priorityCache[roleId];
+        if (!roleId || !priorityList) return [];
 
-        const allowedIds = priorityCache[roleId].map(p => p.userId);
-
-        return allIntegrants.filter(i =>
-            allowedIds.includes(i.user.id)
-        );
+        const allowedIds = priorityList.map(p => p.userId);
+        return allIntegrants.filter(i => allowedIds.includes(i.user.id));
     }
 
-    async function handleCreate() {
-        if (!selectedRole || !selectedIntegrant) {
+    /*
+     * ♻️ REFACTORING — Extract Method (saveEscalation)
+     * Antes: handleCreate e confirmPending tinham o mesmo miolo: validar
+     * papel/integrante, chamar createEscalation, recarregar, notificar o pai,
+     * mostrar toast e tratar erro.
+     * Agora: o miolo comum virou um método; cada chamador só cuida do próprio
+     * estado depois do sucesso.
+     * Benefícios:
+     *   - Duplicação
+     *   + Consistência (mesma validação e mesmas mensagens nos dois fluxos)
+     *   + Legibilidade
+     */
+    async function saveEscalation(draft) {
+        if (!draft?.roleId || !draft?.userId) {
             toast.error("Selecione o papel e o integrante.");
-            return;
+            return false;
         }
 
         try {
-            await createEscalation(event.id, {
-                userId: selectedIntegrant,
-                roleId: selectedRole,
-            });
-
-            toast.success("Escalação adicionada!");
-
-            setAdding(false);
-            setSelectedRole("");
-            setSelectedIntegrant("");
-
+            await escalationService.create(event.id, { userId: draft.userId, roleId: draft.roleId });
             await loadData();
             onUpdated?.();
+            toast.success("Escalação adicionada!");
+            return true;
         } catch (err) {
             console.error(err);
             toast.error("Erro ao adicionar escalação.");
+            return false;
         }
     }
 
-    // ✅ Agora cria sugestões no formato desejado:
-    // - 2 selects (papel já preenchido e travado)
-    // - usuário escolhe apenas o integrante
+    async function confirmManual() {
+        if (await saveEscalation(manualDraft)) setManualDraft(null);
+    }
+
+    async function confirmPending(index) {
+        if (await saveEscalation(pendingEscalations[index])) cancelPending(index);
+    }
+
+    function cancelPending(index) {
+        setPendingEscalations(prev => prev.filter((_, i) => i !== index));
+    }
+
+    /*
+     * ♻️ REFACTORING — Extract Method (updatePending)
+     * Antes: o `setPendingEscalations(prev => prev.map((p, i) => i === index ? {...} : p))`
+     * era escrito inline duas vezes dentro dos onChange do JSX.
+     * Benefícios: - Duplicação  + Legibilidade do JSX
+     */
+    function updatePending(index, changes) {
+        setPendingEscalations(prev => prev.map((p, i) => (i === index ? { ...p, ...changes } : p)));
+    }
+
+    /*
+     * ♻️ REFACTORING — Extract Method (changeDraftRole)
+     * "Trocar o papel" sempre faz 2 coisas: carregar a prioridade do novo
+     * papel e limpar o integrante escolhido. Antes isso estava duplicado nos
+     * dois formulários.
+     * Benefícios: - Duplicação  + Coesão
+     */
+    function changeDraftRole(roleId) {
+        loadPriority(roleId);
+        return { roleId, userId: "" };
+    }
+
+    /*
+     * ♻️ REFACTORING — Move Method (cálculo das sugestões → Lineup.toPendingEscalations)
+     * Antes: 50 linhas aqui navegando por suggestedLineup.roles[i].role.id.
+     * Agora: o componente pergunta à formação e cuida só da UI.
+     * Benefícios: - Feature Envy  + Coesão  + Testabilidade
+     */
     function applyFormationAsSuggestions() {
         if (!suggestedLineup) return;
 
-        const existingRoleIds = escalations
-            .map(e => e?.role?.id)
-            .filter(Boolean)
-            .map(id => String(id));
+        const suggestions = suggestedLineup.toPendingEscalations(escalations, pendingEscalations);
 
-        // aqui a gente evita duplicar a mesma role já sugerida no pending
-        // (mas se sua formação tiver 2 guitarras, elas vêm como 2 itens — isso é OK)
-        const pendingKeys = new Set(
-            pendingEscalations.map(p => `${String(p.roleId)}|${p._key}`)
-        );
-
-        const lineupRoles = Array.isArray(suggestedLineup.roles) ? suggestedLineup.roles : [];
-
-        const rolesToSuggest = lineupRoles
-            .map((lr, idx) => {
-                const role = lr?.role;
-                if (!role?.id) return null;
-
-                // chave única por item da formação (pra permitir repetição da mesma role)
-                const key = `${String(role.id)}|${idx}`;
-
-                return {
-                    roleId: String(role.id),
-                    roleName: role.name,
-                    userId: "",
-                    _key: key, // garante itens únicos mesmo com role repetida
-                };
-            })
-            .filter(Boolean)
-            // regra atual: não sugerir roles que já estão escaladas
-            // (se você quiser sugerir mesmo assim, é só remover esse filtro)
-            .filter(item => !existingRoleIds.includes(item.roleId))
-            // não duplicar pending do mesmo item
-            .filter(item => !pendingKeys.has(`${item.roleId}|${item._key}`));
-
-        if (rolesToSuggest.length === 0) {
+        if (suggestions.length === 0) {
             toast.error("Nenhum papel novo para sugerir a partir da formação.");
             return;
         }
 
-        rolesToSuggest.forEach(item => loadPriority(item.roleId));
-
-        setPendingEscalations(prev => ([
-            ...prev,
-            ...rolesToSuggest
-        ]));
-
+        suggestions.forEach(item => loadPriority(item.roleId));
+        setPendingEscalations(prev => [...prev, ...suggestions]);
         toast.success("Formação aplicada como base.");
-    }
-
-    async function confirmPending(index) {
-        const item = pendingEscalations[index];
-
-        if (!item?.roleId || !item?.userId) {
-            toast.error("Selecione o integrante.");
-            return;
-        }
-
-        try {
-            await createEscalation(event.id, {
-                userId: item.userId,
-                roleId: item.roleId,
-            });
-
-            setPendingEscalations(prev =>
-                prev.filter((_, i) => i !== index)
-            );
-
-            await loadData();
-            onUpdated?.();
-
-            toast.success("Escalação adicionada!");
-        } catch (err) {
-            console.error(err);
-            toast.error("Erro ao confirmar escalação.");
-        }
-    }
-
-    function cancelPending(index) {
-        setPendingEscalations(prev =>
-            prev.filter((_, i) => i !== index)
-        );
     }
 
     async function handleDelete(id) {
         try {
-            await deleteEscalation(id);
+            await escalationService.delete(id);
             await loadData();
             onUpdated?.();
             toast.success("Escalação removida!");
@@ -253,9 +220,7 @@ export default function EventEscalationModal({
 
                 {/* HEADER */}
                 <div className="flex justify-between items-center mb-4">
-                    <h1 className="text-2xl font-bold">
-                        Escalação — {event.name}
-                    </h1>
+                    <h1 className="text-2xl font-bold">Escalação — {event.name}</h1>
                     <button onClick={onClose} className="text-gray-400 hover:text-white">
                         <X size={26} />
                     </button>
@@ -270,12 +235,9 @@ export default function EventEscalationModal({
                                     <Layers size={16} />
                                     Formação sugerida
                                 </p>
-                                <p className="text-sm text-gray-400">
-                                    {suggestedLineup.name}
-                                </p>
+                                <p className="text-sm text-gray-400">{suggestedLineup.name}</p>
 
-                                {/* ✅ (1) Agora mostra os papéis da formação */}
-                                {Array.isArray(suggestedLineup.roles) && suggestedLineup.roles.length > 0 && (
+                                {suggestedLineup.roleCount > 0 && (
                                     <div className="mt-3 flex flex-wrap gap-2">
                                         {suggestedLineup.roles.map((lr, idx) => (
                                             <span
@@ -289,24 +251,19 @@ export default function EventEscalationModal({
                                 )}
                             </div>
 
-                            <Button
-                                className="bg-[#7c5fff] hover:bg-[#6a4ee8]"
-                                onClick={applyFormationAsSuggestions}
-                            >
+                            <Button className="bg-[#7c5fff] hover:bg-[#6a4ee8]" onClick={applyFormationAsSuggestions}>
                                 Usar formação como base
                             </Button>
                         </div>
                     </div>
                 )}
 
-                {/* ✅ (3) LISTA DE ESCALADOS — agora aparece após adicionar */}
+                {/* LISTA DE ESCALADOS */}
                 <div className="mb-6">
                     {loading ? (
                         <p className="text-gray-400 text-sm">Carregando...</p>
                     ) : escalationsSorted.length === 0 ? (
-                        <p className="text-gray-500 text-sm">
-                            Nenhum integrante escalado ainda.
-                        </p>
+                        <p className="text-gray-500 text-sm">Nenhum integrante escalado ainda.</p>
                     ) : (
                         <div className="space-y-3">
                             {escalationsSorted.map((e) => (
@@ -315,12 +272,8 @@ export default function EventEscalationModal({
                                     className="bg-[#111118] border border-[#2a2a30] rounded-xl p-4 flex justify-between items-center gap-4"
                                 >
                                     <div className="min-w-0">
-                                        <p className="text-gray-200 font-medium truncate">
-                                            {e?.user?.name || "Integrante"}
-                                        </p>
-                                        <p className="text-sm text-gray-400 truncate">
-                                            {e?.role?.name || "Papel"}
-                                        </p>
+                                        <p className="text-gray-200 font-medium truncate">{e?.user?.name || "Integrante"}</p>
+                                        <p className="text-sm text-gray-400 truncate">{e?.role?.name || "Papel"}</p>
                                     </div>
 
                                     {editable && (
@@ -338,162 +291,45 @@ export default function EventEscalationModal({
                     )}
                 </div>
 
-                {/* ✅ (2) PENDING DA FORMAÇÃO — 2 selects (role preenchida + integrante) */}
+                {/* PENDENTES DA FORMAÇÃO */}
                 {editable && pendingEscalations.length > 0 && (
                     <div className="space-y-4 mb-6">
                         {pendingEscalations.map((item, index) => (
-                            <div
+                            <EscalationDraftForm
                                 key={item._key || `${item.roleId}-${index}`}
-                                className="mt-6 space-y-4 p-5 bg-[#111118] border border-[#2a2a30] rounded-xl"
-                            >
-                                <h2 className="text-lg font-semibold">Novo escalado</h2>
-
-                                <div>
-                                    <label className="text-sm text-gray-300">Papel</label>
-                                    <select
-                                        value={item.roleId}
-                                        onChange={(e) => {
-                                            const newRoleId = e.target.value;
-
-                                            loadPriority(newRoleId);
-
-                                            const role = allRoles.find(r => String(r.id) === String(newRoleId));
-
-                                            setPendingEscalations(prev =>
-                                                prev.map((p, i) =>
-                                                    i === index
-                                                        ? {
-                                                            ...p,
-                                                            roleId: newRoleId,
-                                                            roleName: role?.name || "",
-                                                            userId: "", // limpa integrante ao trocar papel
-                                                        }
-                                                        : p
-                                                )
-                                            );
-                                        }}
-                                        className="w-full bg-[#1a1a1e] border border-[#2a2a30] rounded-lg px-3 py-2 mt-1"
-                                    >
-                                        {allRoles.map(r => (
-                                            <option key={r.id} value={r.id}>
-                                                {r.name}
-                                            </option>
-                                        ))}
-                                    </select>
-
-                                </div>
-
-                                <div>
-                                    <label className="text-sm text-gray-300">Integrante</label>
-                                    <select
-                                        value={item.userId}
-                                        onChange={(e) => {
-                                            const value = e.target.value;
-                                            setPendingEscalations(prev =>
-                                                prev.map((p, i) =>
-                                                    i === index ? { ...p, userId: value } : p
-                                                )
-                                            );
-                                        }}
-                                        className="w-full bg-[#1a1a1e] border border-[#2a2a30] rounded-lg px-3 py-2 mt-1"
-                                    >
-                                        <option value="">Selecione...</option>
-                                        {getPriorityOnlyIntegrants(item.roleId).map(i => (
-                                            <option key={i.user.id} value={i.user.id}>
-                                                {i.user.name}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-
-                                <div className="flex gap-3 mt-4">
-                                    <Button
-                                        className="bg-emerald-600/80 hover:bg-emerald-500 flex-1"
-                                        onClick={() => confirmPending(index)}
-                                    >
-                                        Confirmar
-                                    </Button>
-
-                                    <Button
-                                        className="bg-gray-600/50 hover:bg-gray-600 flex-1"
-                                        onClick={() => cancelPending(index)}
-                                    >
-                                        Cancelar
-                                    </Button>
-                                </div>
-                            </div>
+                                draft={item}
+                                roles={allRoles}
+                                integrants={integrantsAllowedFor(item.roleId)}
+                                onRoleChange={roleId => updatePending(index, changeDraftRole(roleId))}
+                                onUserChange={userId => updatePending(index, { userId })}
+                                onConfirm={() => confirmPending(index)}
+                                onCancel={() => cancelPending(index)}
+                            />
                         ))}
                     </div>
                 )}
 
-                {/* ADD MANUAL */}
-                {editable && !adding && (
+                {/* ADIÇÃO MANUAL */}
+                {editable && !manualDraft && (
                     <Button
                         className="w-full bg-[#7c5fff] hover:bg-[#6a4ee8] flex items-center justify-center gap-2 py-3"
-                        onClick={() => setAdding(true)}
+                        onClick={() => setManualDraft(EMPTY_DRAFT)}
                     >
                         <UserPlus size={20} />
                         Adicionar à Escalação
                     </Button>
                 )}
 
-                {editable && adding && (
-                    <div className="mt-6 space-y-4 p-5 bg-[#111118] border border-[#2a2a30] rounded-xl">
-                        <h2 className="text-lg font-semibold">Novo escalado</h2>
-
-                        <div>
-                            <label className="text-sm text-gray-300">Papel</label>
-                            <select
-                                value={selectedRole}
-                                onChange={e => {
-                                    const value = e.target.value;
-                                    setSelectedRole(value);
-                                    setSelectedIntegrant("");
-                                    loadPriority(value);
-                                }}
-                                className="w-full bg-[#1a1a1e] border border-[#2a2a30] rounded-lg px-3 py-2 mt-1"
-                            >
-                                <option value="">Selecione...</option>
-                                {allRoles.map(r => (
-                                    <option key={r.id} value={r.id}>{r.name}</option>
-                                ))}
-                            </select>
-                        </div>
-
-                        {selectedRole && (
-                            <div>
-                                <label className="text-sm text-gray-300">Integrante</label>
-                                <select
-                                    value={selectedIntegrant}
-                                    onChange={e => setSelectedIntegrant(e.target.value)}
-                                    className="w-full bg-[#1a1a1e] border border-[#2a2a30] rounded-lg px-3 py-2 mt-1"
-                                >
-                                    <option value="">Selecione...</option>
-                                    {getPriorityOnlyIntegrants(selectedRole).map(i => (
-                                        <option key={i.user.id} value={i.user.id}>
-                                            {i.user.name}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                        )}
-
-                        <div className="flex gap-3 mt-4">
-                            <Button
-                                className="bg-emerald-600/80 hover:bg-emerald-500 flex-1"
-                                onClick={handleCreate}
-                            >
-                                Confirmar
-                            </Button>
-
-                            <Button
-                                className="bg-gray-600/50 hover:bg-gray-600 flex-1"
-                                onClick={() => setAdding(false)}
-                            >
-                                Cancelar
-                            </Button>
-                        </div>
-                    </div>
+                {editable && manualDraft && (
+                    <EscalationDraftForm
+                        draft={manualDraft}
+                        roles={allRoles}
+                        integrants={integrantsAllowedFor(manualDraft.roleId)}
+                        onRoleChange={roleId => setManualDraft(changeDraftRole(roleId))}
+                        onUserChange={userId => setManualDraft(prev => ({ ...prev, userId }))}
+                        onConfirm={confirmManual}
+                        onCancel={() => setManualDraft(null)}
+                    />
                 )}
             </div>
         </div>

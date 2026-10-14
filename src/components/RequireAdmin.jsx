@@ -1,18 +1,27 @@
 import { Navigate, useParams } from "react-router-dom";
+import { bandSession } from "../core/session/BandSession.js";
 
 export default function RequireAdmin({ children }) {
-    const role = localStorage.getItem("bandRole");
     const { id } = useParams();
 
-    if (role !== "ADMIN") {
-        // se estiver dentro de /bands/:id, manda pra home da banda
-        if (id) {
-            return <Navigate to={`/bands/${id}/home`} replace />;
-        }
-
-        // fallback (caso acesse algo fora do contexto de banda)
-        return <Navigate to="/bands/select" replace />;
+    /*
+     * ♻️ REFACTORING — Move Method (checagem de admin → BandSession.isAdmin)
+     * Antes: `localStorage.getItem("bandRole") !== "ADMIN"`.
+     * Benefícios:
+     *   - Acoplamento (com localStorage e com a string "ADMIN")
+     *   - Duplicação (a mesma regra existia em 4 arquivos)
+     */
+    if (bandSession.isAdmin) {
+        return children;
     }
 
-    return children;
+    /*
+     * ♻️ REFACTORING — Extract Variable (fallbackPath)
+     * Antes: dois `return <Navigate ...>` com um if no meio.
+     * Benefícios:
+     *   + Legibilidade
+     *   - Duplicação de JSX
+     */
+    const fallbackPath = id ? `/bands/${id}/home` : "/bands/select";
+    return <Navigate to={fallbackPath} replace />;
 }

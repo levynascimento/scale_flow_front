@@ -1,23 +1,10 @@
-// src_frontend/pages/events/Events.jsx
-
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
-import {
-    getBandEvents,
-    getBandEventsToday,
-    getBandEventsFuture,
-    getBandEventsPast,
-    getEventById,
-    createEvent,
-    updateEvent,
-    deleteEvent
-} from '../../services/eventApi.js';
-
-import { getBandIntegrants } from '../../services/integrantsApi.js';
-import { getRoles } from '../../services/rolesApi.js';
-import { getLineups } from '../../services/lineupApi.js'; // ⭐ importa formações
+import { bandService, eventService, lineupService, roleService } from '../../services/index.js';
+import { bandSession } from '../../core/session/BandSession.js';
+import { EventFilter } from '../../domain/EventFilter.js';
 
 import Button from '../../components/Button.jsx';
 import ConfirmDialog from '../../components/ConfirmDialog.jsx';
@@ -29,12 +16,15 @@ import EventFilterBar from './EventFilterBar.jsx';
 import EventEscalationModal from "./EventEscalationModal.jsx";
 
 export default function Events() {
-    const role = localStorage.getItem("bandRole");
-    const isAdmin = role === "ADMIN";
-
+    const isAdmin = bandSession.isAdmin;
     const { id: bandId } = useParams();
 
-    const today = new Date().toISOString().slice(0, 10);
+    /*
+     * ♻️ REFACTORING — Inline Variable (today)
+     * Antes: `const today = new Date().toISOString().slice(0, 10)` era
+     * calculado a cada render e nunca usado.
+     * Benefícios: - Código morto  + Legibilidade
+     */
 
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -43,75 +33,43 @@ export default function Events() {
     const [formOpen, setFormOpen] = useState(false);
     const [editingEvent, setEditingEvent] = useState(null);
     const [eventToDelete, setEventToDelete] = useState(null);
-    const [filter, setFilter] = useState("now");
 
-    // ⭐ Escalação
+    /*
+     * ♻️ REFACTORING — Change Function Declaration (filter: string → EventFilter)
+     * Antes: o estado era a string "now" e cada parte do código interpretava.
+     * Agora: o estado guarda o objeto EventFilter, que sabe endpoint e ordem.
+     * Benefícios: + Coesão  - Magic strings  + Segurança (sem typo em "futrue")
+     */
+    const [filter, setFilter] = useState(EventFilter.NOW);
+
     const [openEscalation, setOpenEscalation] = useState(false);
     const [escalationEvent, setEscalationEvent] = useState(null);
 
     const [allIntegrants, setAllIntegrants] = useState([]);
     const [allRoles, setAllRoles] = useState([]);
-    const [lineups, setLineups] = useState([]); // ⭐ formações da banda
+    const [lineups, setLineups] = useState([]);
 
-    /** Atualiza apenas 1 evento da lista */
-    function updateEventInList(eventId, newData) {
-        setEvents(prev =>
-            prev.map(ev =>
-                ev.id === eventId ? { ...ev, ...newData } : ev
-            )
-        );
+    function updateEventInList(eventId, changes) {
+        setEvents(prev => prev.map(ev => (ev.id === eventId ? ev.with(changes) : ev)));
     }
 
-    // -----------------------------------------------------
-    // LOAD EVENTS
-    // -----------------------------------------------------
+    /*
+     * ♻️ REFACTORING — Extract Method + Move Method (loadEvents)
+     * Antes: loadEvents tinha 60 linhas: um if/else de 4 ramos para escolher
+     * a função da API e um if/else de 3 ramos com uma função de comparação
+     * de 20 linhas para ordenar.
+     * Agora: `eventService.listByFilter(bandId, filter)`, e o filtro já sabe
+     * qual endpoint chamar e como ordenar.
+     * Benefícios:
+     *   - Complexidade ciclomática (de ~10 caminhos para 1)
+     *   + Coesão (a regra de cada filtro mora no EventFilter)
+     *   - Acoplamento (o componente não conhece as 4 URLs)
+     *   + Testabilidade (ordenação testável sem React)
+     */
     async function loadEvents() {
         try {
             setLoading(true);
-
-            let data = [];
-
-            if (filter === "now") {
-                data = await getBandEventsToday(bandId);
-            } else if (filter === "future") {
-                data = await getBandEventsFuture(bandId);
-            } else if (filter === "past") {
-                data = await getBandEventsPast(bandId);
-            } else {
-                data = await getBandEvents(bandId);
-            }
-
-            const now = new Date();
-
-            if (filter === "past") {
-                data.sort((a, b) => new Date(b.startingTime) - new Date(a.startingTime));
-            } else if (filter === "future" || filter === "now") {
-                data.sort((a, b) => new Date(a.startingTime) - new Date(b.startingTime));
-            } else {
-                data.sort((a, b) => {
-                    const aStart = new Date(a.startingTime);
-                    const bStart = new Date(b.startingTime);
-
-                    const aEnded = new Date(a.endingTime) < now;
-                    const bEnded = new Date(b.endingTime) < now;
-
-                    const aIsToday = aStart <= now && new Date(a.endingTime) >= now;
-                    const bIsToday = bStart <= now && new Date(b.endingTime) >= now;
-
-                    if (aIsToday && !bIsToday) return -1;
-                    if (!aIsToday && bIsToday) return 1;
-
-                    if (!aEnded && bEnded) return -1;
-                    if (aEnded && !bEnded) return 1;
-
-                    if (!aEnded && !bEnded) return aStart - bStart;
-
-                    return bStart - aStart;
-                });
-            }
-
-            setEvents(data);
-
+            setEvents(await eventService.listByFilter(bandId, filter));
         } catch (err) {
             console.error(err);
             toast.error("Erro ao carregar eventos.");
@@ -120,28 +78,34 @@ export default function Events() {
         }
     }
 
-    // Rodar ao carregar / trocar filtro
+    /*
+     * ♻️ REFACTORING — Inline Method (run)
+     * Antes:
+     *   async function run() { await loadEvents(); }
+     *   if (bandId) run();
+     * `run` só repassava a chamada para loadEvents, sem acrescentar nada.
+     * Benefícios: - Indireção desnecessária  + Legibilidade
+     */
     useEffect(() => {
-        async function run() {
-            await loadEvents();
-        }
-        if (bandId) run();
+        if (bandId) loadEvents();
     }, [bandId, filter]);
 
-    // -----------------------------------------------------
-    // LOAD INTEGRANTS + ROLES + LINEUPS
-    // -----------------------------------------------------
+    /*
+     * ♻️ REFACTORING — Extract Method + paralelização (loadAux)
+     * Antes: 3 `await` em sequência para dados independentes.
+     * Benefícios: + Desempenho (Promise.all)  + Legibilidade
+     */
     useEffect(() => {
         async function loadAux() {
             try {
-                const integrants = await getBandIntegrants(bandId);
-                const roles = await getRoles();
-                const bandLineups = await getLineups(bandId); // ⭐ busca formações
-
+                const [integrants, roles, bandLineups] = await Promise.all([
+                    bandService.listMembers(bandId),
+                    roleService.list(),
+                    lineupService.listByBand(bandId)
+                ]);
                 setAllIntegrants(integrants);
                 setAllRoles(roles);
                 setLineups(bandLineups);
-
             } catch (err) {
                 console.error("Erro ao carregar integrants/roles/lineups:", err);
             }
@@ -150,21 +114,14 @@ export default function Events() {
         if (bandId) loadAux();
     }, [bandId]);
 
-    // -----------------------------------------------------
-    // VIEW DETAILS
-    // -----------------------------------------------------
     async function handleOpenDetails(eventId) {
         try {
-            const data = await getEventById(eventId);
-            setSelectedEvent(data);
+            setSelectedEvent(await eventService.getById(eventId));
         } catch {
             toast.error("Erro ao carregar detalhes do evento.");
         }
     }
 
-    // -----------------------------------------------------
-    // CREATE / EDIT EVENT
-    // -----------------------------------------------------
     function handleOpenCreate() {
         setEditingEvent(null);
         setFormOpen(true);
@@ -176,70 +133,69 @@ export default function Events() {
         setFormOpen(true);
     }
 
+    /*
+     * ♻️ REFACTORING — Extract Method (closeForm)
+     * Antes: `setFormOpen(false); setEditingEvent(null);` repetido no submit e
+     * no onClose do modal.
+     * Benefícios: - Duplicação  + Legibilidade
+     */
+    function closeForm() {
+        setFormOpen(false);
+        setEditingEvent(null);
+    }
+
+    /*
+     * ♻️ REFACTORING — Extract Method (saveEvent)
+     * Antes: o if/else de criar vs editar ficava no meio do try/catch, junto
+     * com toast e limpeza de estado.
+     * Benefícios: + Legibilidade  + Coesão
+     */
+    async function saveEvent(formData) {
+        if (editingEvent) {
+            await eventService.update(editingEvent.id, formData);
+            return "Evento atualizado!";
+        }
+        await eventService.create(bandId, formData);
+        return "Evento criado!";
+    }
+
     async function handleSubmitForm(formData) {
         try {
-            if (editingEvent) {
-                await updateEvent(editingEvent.id, formData);
-                toast.success("Evento atualizado!");
-            } else {
-                await createEvent(bandId, formData);
-                toast.success("Evento criado!");
-            }
-
-            setFormOpen(false);
-            setEditingEvent(null);
+            toast.success(await saveEvent(formData));
+            closeForm();
             setSelectedEvent(null);
-
             await loadEvents();
-
         } catch {
             toast.error("Erro ao salvar evento.");
         }
     }
 
-    // -----------------------------------------------------
-    // DELETE
-    // -----------------------------------------------------
     async function handleConfirmDelete() {
         try {
-            await deleteEvent(eventToDelete.id);
+            await eventService.delete(eventToDelete.id);
             toast.success("Evento excluído!");
-
             setEventToDelete(null);
             setSelectedEvent(null);
-
             await loadEvents();
-
         } catch {
             toast.error("Erro ao excluir evento.");
         }
     }
 
-    // -----------------------------------------------------
-    // ESCALAÇÃO
-    // -----------------------------------------------------
     function handleOpenEscalation(ev) {
         setEscalationEvent(ev);
         setOpenEscalation(true);
     }
 
-    // -----------------------------------------------------
-    // RENDER
-    // -----------------------------------------------------
     return (
         <div className="space-y-6">
-
             <div className="flex items-center justify-between">
                 <div>
                     <h1 className="text-2xl font-semibold text-[#c4b5ff]">Eventos</h1>
-                    <p className="text-sm text-gray-400 mt-1">
-                        Gerencie e filtre os eventos da banda
-                    </p>
+                    <p className="text-sm text-gray-400 mt-1">Gerencie e filtre os eventos da banda</p>
                 </div>
 
-                <Button onClick={handleOpenCreate}>
-                    Novo evento
-                </Button>
+                <Button onClick={handleOpenCreate}>Novo evento</Button>
             </div>
 
             <EventFilterBar current={filter} onChange={setFilter} />
@@ -251,11 +207,7 @@ export default function Events() {
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                     {events.map(ev => (
-                        <EventCard
-                            key={ev.id}
-                            event={ev}
-                            onClick={() => handleOpenDetails(ev.id)}
-                        />
+                        <EventCard key={ev.id} event={ev} onClick={() => handleOpenDetails(ev.id)} />
                     ))}
                 </div>
             )}
@@ -269,9 +221,7 @@ export default function Events() {
                 onDelete={() => setEventToDelete(selectedEvent)}
                 onEscalation={handleOpenEscalation}
                 onUpdated={(changes) => {
-                    if (selectedEvent) {
-                        updateEventInList(selectedEvent.id, changes);
-                    }
+                    if (selectedEvent) updateEventInList(selectedEvent.id, changes);
                     loadEvents();
                 }}
             />
@@ -279,11 +229,8 @@ export default function Events() {
             <EventFormModal
                 open={formOpen}
                 event={editingEvent}
-                lineups={lineups} // ⭐ passa formações para o modal
-                onClose={() => {
-                    setFormOpen(false);
-                    setEditingEvent(null);
-                }}
+                lineups={lineups}
+                onClose={closeForm}
                 onSubmit={handleSubmitForm}
             />
 
@@ -295,17 +242,15 @@ export default function Events() {
                 onCancel={() => setEventToDelete(null)}
             />
 
-            {/* ⭐ ESCALAÇÃO */}
             <EventEscalationModal
                 open={openEscalation}
                 event={escalationEvent}
                 onClose={() => setOpenEscalation(false)}
                 allIntegrants={allIntegrants}
                 allRoles={allRoles}
-                onUpdated={() => loadEvents()}
+                onUpdated={loadEvents}
                 editable={isAdmin}
             />
-
         </div>
     );
 }
