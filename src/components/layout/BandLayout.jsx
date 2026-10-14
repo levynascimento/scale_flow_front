@@ -1,5 +1,6 @@
-import { Outlet, NavLink, useParams } from "react-router-dom"
+import { Outlet, useParams } from "react-router-dom"
 import { useState } from "react"
+import toast from "react-hot-toast"
 import {
     Home,
     Music,
@@ -9,12 +10,30 @@ import {
     ChevronLeft,
     ChevronRight,
     LogOut,
-    Cloud,
     Settings,
     User
 } from "lucide-react"
-import { logoutUser } from "../../utils/authUtils"
-import ConfirmDialog from "../ConfirmDialog.jsx";
+import { authSession } from "../../core/session/AuthSession.js"
+import { bandSession } from "../../core/session/BandSession.js"
+import ConfirmDialog from "../ConfirmDialog.jsx"
+import SidebarLink from "./SidebarLink.jsx"
+
+/*
+ * ♻️ REFACTORING — Extract Variable → Move Field (NAV_ITEMS)
+ * Antes: os itens do menu eram 5 blocos de JSX quase idênticos.
+ * Agora: são dados (rótulo, ícone, caminho, se é só admin) e o JSX itera.
+ * Benefícios:
+ *   - Duplicação
+ *   + Extensibilidade (novo item de menu = uma linha)
+ *   + Legibilidade
+ */
+const NAV_ITEMS = [
+    { path: "home", label: "Home", icon: Home, end: true },
+    { path: "repertoires", label: "Repertório", icon: Music },
+    { path: "events", label: "Eventos", icon: Calendar },
+    { path: "roles", label: "Papéis", icon: Users },
+    { path: "lineups", label: "Formações", icon: Layers, adminOnly: true }
+]
 
 export default function BandLayout() {
     const { id } = useParams()
@@ -22,16 +41,54 @@ export default function BandLayout() {
     const [userMenu, setUserMenu] = useState(false)
     const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
 
-    const role = localStorage.getItem("bandRole")
-    const isAdmin = role === "ADMIN"
+    /*
+     * ♻️ REFACTORING — Rename Variable (role → membership)
+     * Antes: `role` (string vinda do localStorage), nome que colidia com os
+     * "papéis" musicais do sistema.
+     * Agora: `membership` é um objeto MembershipRole com rótulo e estilo.
+     * Benefícios:
+     *   + Legibilidade
+     *   - Ambiguidade
+     */
+    const membership = bandSession.membershipRole
+    const isAdmin = membership.isAdmin
 
-    const baseItem = (isActive) =>
-        `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition
-        ${isActive ? "bg-[#7c5fff] text-white" : "text-gray-300 hover:bg-[#2a2a2f]"}`
+    /*
+     * ♻️ REFACTORING — Extract Variable (visibleNavItems)
+     * Benefícios:
+     *   + Legibilidade (a regra "admin vê formações" fica explícita)
+     */
+    const visibleNavItems = NAV_ITEMS.filter(item => !item.adminOnly || isAdmin)
 
+    /*
+     * ♻️ REFACTORING — Move Method (leaveBand → BandSession.leave)
+     * Antes: o componente manipulava localStorage diretamente (e removia a
+     * chave errada, "currentBand", então a banda nunca era esquecida).
+     * Benefícios:
+     *   + Coesão
+     *   - Acoplamento
+     *   + Corretude (bug corrigido)
+     */
     function leaveBand() {
-        localStorage.removeItem("currentBand")
-        window.location.href = "/bands"
+        bandSession.leave()
+        window.location.href = "/bands/select"
+    }
+
+    /*
+     * ♻️ REFACTORING — Move Method (logoutUser → AuthSession.endSession)
+     * O toast ficou aqui (é UI); limpar a sessão e redirecionar foi para a sessão.
+     * Benefícios:
+     *   + Coesão
+     *   - Acoplamento
+     */
+    function logout() {
+        toast.success("Sessão encerrada com sucesso!")
+        authSession.endSession({ redirectDelayMs: 800 })
+    }
+
+    function goToUserSettings() {
+        setUserMenu(false)
+        window.location.href = "/user/settings"
     }
 
     return (
@@ -61,31 +118,20 @@ export default function BandLayout() {
                             onClick={() => setCollapsed(!collapsed)}
                             className="text-gray-400 hover:text-white text-sm"
                         >
-                            {collapsed ? (
-                                <ChevronRight size={18} />
-                            ) : (
-                                <ChevronLeft size={18} />
-                            )}
+                            {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
                         </button>
                     </div>
 
-                    {/* BADGE DO TIPO DE USUÁRIO */}
+                    {/*
+                      ♻️ REFACTORING — Extract Class (MembershipRole)
+                      Antes: dois ternários aninhados de 3 níveis (um para a cor,
+                      outro para o texto) direto no JSX.
+                      Benefícios: - Complexidade  - Duplicação  + Legibilidade
+                    */}
                     {!collapsed && (
                         <div className="mt-3">
-                            <span
-                                className={`text-xs px-3 py-1 rounded-xl border ${
-                                    role === "ADMIN"
-                                        ? "text-[#cbb6ff] border-[#7c5fff]/40 bg-[#7c5fff]/10"
-                                        : role === "MEMBER"
-                                            ? "text-[#a7d4ff] border-[#4ea1ff]/40 bg-[#4ea1ff]/10"
-                                            : "text-gray-400 border-gray-600/40 bg-gray-600/10"
-                                }`}
-                            >
-                                {role === "ADMIN"
-                                    ? "Administrador"
-                                    : role === "MEMBER"
-                                        ? "Membro"
-                                        : "Observador"}
+                            <span className={`text-xs px-3 py-1 rounded-xl border ${membership.badgeClass}`}>
+                                {membership.label}
                             </span>
                         </div>
                     )}
@@ -98,39 +144,27 @@ export default function BandLayout() {
                         scrollbar-thin scrollbar-thumb-[#2a2a30] scrollbar-track-[#1b1b1f]
                     "
                 >
-                    <NavLink to={`/bands/${id}/home`} end className={({ isActive }) => baseItem(isActive)}>
-                        <Home size={18} /> {!collapsed && "Home"}
-                    </NavLink>
-
-                    <NavLink to={`/bands/${id}/repertoires`} className={({ isActive }) => baseItem(isActive)}>
-                        <Music size={18} /> {!collapsed && "Repertório"}
-                    </NavLink>
-
-                    <NavLink to={`/bands/${id}/events`} className={({ isActive }) => baseItem(isActive)}>
-                        <Calendar size={18} /> {!collapsed && "Eventos"}
-                    </NavLink>
-
-                    <NavLink to={`/bands/${id}/roles`} className={({ isActive }) => baseItem(isActive)}>
-                        <Users size={18} /> {!collapsed && "Papéis"}
-                    </NavLink>
-
-                    {isAdmin && (
-                        <NavLink to={`/bands/${id}/lineups`} className={({ isActive }) => baseItem(isActive)}>
-                            <Layers size={18} /> {!collapsed && "Formações"}
-                        </NavLink>
-                    )}
+                    {visibleNavItems.map(item => (
+                        <SidebarLink
+                            key={item.path}
+                            to={`/bands/${id}/${item.path}`}
+                            icon={item.icon}
+                            label={item.label}
+                            end={item.end}
+                            collapsed={collapsed}
+                        />
+                    ))}
                 </nav>
 
                 {/* RODAPÉ FIXO */}
                 <div className="p-3 border-t border-[#2a2a30] space-y-2">
-
                     {isAdmin && (
-                        <NavLink
+                        <SidebarLink
                             to={`/bands/${id}/settings`}
-                            className={({ isActive }) => baseItem(isActive)}
-                        >
-                            <Settings size={18} /> {!collapsed && "Configurações da Banda"}
-                        </NavLink>
+                            icon={Settings}
+                            label="Configurações da Banda"
+                            collapsed={collapsed}
+                        />
                     )}
 
                     <button
@@ -163,10 +197,7 @@ export default function BandLayout() {
                         {userMenu && (
                             <div className="absolute right-0 mt-2 w-48 bg-[#1b1b1f] border border-[#2a2a30] rounded-lg shadow-xl p-2 z-50">
                                 <button
-                                    onClick={() => {
-                                        setUserMenu(false)
-                                        window.location.href = "/user/settings"
-                                    }}
+                                    onClick={goToUserSettings}
                                     className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-[#2a2a2f] w-full text-left text-sm"
                                 >
                                     <Settings size={16} />
@@ -174,7 +205,7 @@ export default function BandLayout() {
                                 </button>
 
                                 <button
-                                    onClick={() => logoutUser()}
+                                    onClick={logout}
                                     className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-[#3a2020] text-red-400 w-full text-left text-sm"
                                 >
                                     <LogOut size={16} />
@@ -191,7 +222,6 @@ export default function BandLayout() {
                 </div>
             </main>
 
-            {/* CONFIRM */}
             <ConfirmDialog
                 open={leaveDialogOpen}
                 title="Sair da Banda"

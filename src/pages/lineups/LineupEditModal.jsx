@@ -1,32 +1,26 @@
 import { useEffect, useState } from "react";
+import toast from "react-hot-toast";
 import { X, Trash2, Plus } from "lucide-react";
-import { toast } from "react-toastify";
-
-import { getRoles } from "../../services/rolesApi.js";
-import {
-    getLineup,
-    updateLineupName,
-    addRoleToLineup,
-    removeRoleFromLineup,
-} from "../../services/lineupApi.js";
+import { lineupService, roleService } from "../../services/index.js";
+import { LineupDraft } from "../../domain/LineupDraft.js";
+import { useAnimatedClose } from "../../hooks/useAnimatedClose.js";
 
 export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) {
     const [name, setName] = useState("");
     const [roles, setRoles] = useState([]);
-    const [items, setItems] = useState([]);
-    const [draftItems, setDraftItems] = useState([]);
+
+    /*
+     * ♻️ REFACTORING — Extract Class (items + draftItems → LineupDraft)
+     * Antes: dois estados paralelos (o original e o rascunho) que o
+     * componente precisava manter sincronizados à mão.
+     * Agora: um objeto LineupDraft guarda os dois e sabe calcular a diferença.
+     * Benefícios: + Coesão  + Encapsulamento  + Testabilidade  - Complexidade
+     */
+    const [draft, setDraft] = useState(LineupDraft.of([]));
     const [newRole, setNewRole] = useState("");
-
     const [loading, setLoading] = useState(true);
-    const [closing, setClosing] = useState(false);
 
-    function handleAnimatedClose() {
-        setClosing(true);
-        setTimeout(() => {
-            setClosing(false);
-            onClose();
-        }, 150);
-    }
+    const { close, animationClass } = useAnimatedClose(onClose);
 
     useEffect(() => {
         if (!open || !lineupId) return;
@@ -34,15 +28,12 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
         async function load() {
             try {
                 setLoading(true);
-
-                const [lineupData, rolesData] = await Promise.all([
-                    getLineup(lineupId),
-                    getRoles(),
+                const [lineup, rolesData] = await Promise.all([
+                    lineupService.getById(lineupId),
+                    roleService.list(),
                 ]);
-
-                setName(lineupData.name);
-                setItems(lineupData.roles || []);
-                setDraftItems(lineupData.roles || []);
+                setName(lineup.name);
+                setDraft(LineupDraft.of(lineup.roles));
                 setRoles(rolesData);
             } catch {
                 toast.error("Erro ao carregar formação");
@@ -56,7 +47,7 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
 
     async function handleSaveName() {
         try {
-            await updateLineupName(lineupId, { name: name.trim() });
+            await lineupService.rename(lineupId, name.trim());
             toast.success("Nome atualizado");
             onUpdated();
         } catch {
@@ -65,47 +56,23 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
     }
 
     function handleAddRoleLocal() {
-        if (!newRole) return toast.warn("Selecione um papel.");
-
-        const role = roles.find(r => r.id === newRole);
-        if (!role) return;
-
-        setDraftItems(prev => [
-            ...prev,
-            {
-                id: `temp-${Date.now()}`,
-                role,
-                isNew: true,
-            },
-        ]);
-
+        if (!newRole) return toast.error("Selecione um papel.");
+        setDraft(prev => prev.addRole(newRole, roles));
         setNewRole("");
     }
 
-    function handleRemoveRoleLocal(itemId) {
-        setDraftItems(prev => prev.filter(i => i.id !== itemId));
-    }
-
+    /*
+     * ♻️ REFACTORING — Move Method (diff + chamadas → LineupService.applyDraft)
+     * Antes: 20 linhas aqui calculando removidos/adicionados e chamando a API
+     * em dois laços.
+     * Benefícios: + Coesão  - Responsabilidades do componente  + Testabilidade
+     */
     async function handleSaveRoles() {
         try {
-            const removed = items.filter(
-                old => !draftItems.find(d => d.id === old.id)
-            );
-
-            for (const r of removed) {
-                await removeRoleFromLineup(r.id);
-            }
-
-            const added = draftItems.filter(i => i.isNew);
-            for (const a of added) {
-                await addRoleToLineup(lineupId, {
-                    roleId: a.role.id,
-                });
-            }
-
+            await lineupService.applyDraft(lineupId, draft);
             toast.success("Formação atualizada!");
             onUpdated();
-            handleAnimatedClose();
+            close();
         } catch {
             toast.error("Erro ao salvar formação");
         }
@@ -115,19 +82,10 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fadeIn">
-            <div
-                className={`bg-[#1b1b1f] border border-[#2a2a30] rounded-xl p-6 w-[90%] max-w-lg shadow-xl ${
-                    closing ? "animate-fadeOut" : "animate-scaleIn"
-                }`}
-            >
+            <div className={`bg-[#1b1b1f] border border-[#2a2a30] rounded-xl p-6 w-[90%] max-w-lg shadow-xl ${animationClass}`}>
                 <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl text-gray-100 font-semibold">
-                        Editar Formação
-                    </h2>
-                    <button
-                        onClick={handleAnimatedClose}
-                        className="text-gray-400 hover:text-white"
-                    >
+                    <h2 className="text-xl text-gray-100 font-semibold">Editar Formação</h2>
+                    <button onClick={close} className="text-gray-400 hover:text-white">
                         <X size={22} />
                     </button>
                 </div>
@@ -136,9 +94,7 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
                     <p className="text-gray-400 text-sm">Carregando...</p>
                 ) : (
                     <>
-                        <label className="text-gray-300 text-sm">
-                            Nome da formação
-                        </label>
+                        <label className="text-gray-300 text-sm">Nome da formação</label>
                         <input
                             className="w-full bg-[#121214] border border-[#2d2d35] rounded-lg px-3 py-2 text-gray-200 mb-3"
                             value={name}
@@ -146,24 +102,18 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
                             onBlur={handleSaveName}
                         />
 
-                        <p className="text-gray-300 text-sm mb-2">
-                            Papéis da formação
-                        </p>
+                        <p className="text-gray-300 text-sm mb-2">Papéis da formação</p>
 
                         <div className="space-y-3 mb-4">
-                            {draftItems.map((item) => (
+                            {draft.items.map((item) => (
                                 <div
                                     key={item.id}
                                     className="bg-[#242428] border border-[#33333a] p-3 rounded-lg flex justify-between items-center"
                                 >
-                                    <p className="text-gray-200 font-medium">
-                                        {item.role?.name}
-                                    </p>
+                                    <p className="text-gray-200 font-medium">{item.role?.name}</p>
 
                                     <button
-                                        onClick={() =>
-                                            handleRemoveRoleLocal(item.id)
-                                        }
+                                        onClick={() => setDraft(prev => prev.removeItem(item.id))}
                                         className="bg-red-600 hover:bg-red-700 p-1 rounded"
                                     >
                                         <Trash2 size={16} className="text-white" />
@@ -172,9 +122,7 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
                             ))}
                         </div>
 
-                        <p className="text-gray-300 text-sm mb-2">
-                            Adicionar papel
-                        </p>
+                        <p className="text-gray-300 text-sm mb-2">Adicionar papel</p>
 
                         <div className="flex gap-2 mb-4">
                             <select
@@ -184,9 +132,7 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
                             >
                                 <option value="">Selecione...</option>
                                 {roles.map((role) => (
-                                    <option key={role.id} value={role.id}>
-                                        {role.name}
-                                    </option>
+                                    <option key={role.id} value={role.id}>{role.name}</option>
                                 ))}
                             </select>
 
@@ -199,13 +145,9 @@ export default function LineupEditModal({ open, onClose, lineupId, onUpdated }) 
                         </div>
 
                         <div className="flex justify-between">
-                            <button
-                                onClick={handleAnimatedClose}
-                                className="px-4 py-2 text-gray-300 hover:text-white"
-                            >
+                            <button onClick={close} className="px-4 py-2 text-gray-300 hover:text-white">
                                 Cancelar
                             </button>
-
                             <button
                                 onClick={handleSaveRoles}
                                 className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg"

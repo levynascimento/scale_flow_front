@@ -1,45 +1,38 @@
-// src/pages/lineups/Lineups.jsx
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-
-import { getLineups, deleteLineup } from "../../services/lineupApi.js";
-import { getRoles } from "../../services/rolesApi.js";
-
 import { Plus } from "lucide-react";
-
+import { lineupService } from "../../services/index.js";
 import ConfirmDialog from "../../components/ConfirmDialog.jsx";
 import LineupCreateModal from "./LineupCreateModal.jsx";
 import LineupDetailsModal from "./LineupDetailsModal.jsx";
 import LineupEditModal from "./LineupEditModal.jsx";
 
+const CLOSED_DELETE_DIALOG = { open: false, lineup: null };
+
 export default function Lineups() {
     const { id: bandId } = useParams();
 
     const [lineups, setLineups] = useState([]);
-    const [roles, setRoles] = useState([]);
     const [loading, setLoading] = useState(true);
+
+    /*
+     * ♻️ REFACTORING — Inline Variable (roles)
+     * Antes: a tela buscava todos os papéis (GET /roles) junto com as
+     * formações e guardava em `roles`, mas nunca usava. Era uma requisição
+     * e um estado inúteis.
+     * Benefícios: - Código morto  - Requisição desnecessária  + Desempenho
+     */
 
     const [createOpen, setCreateOpen] = useState(false);
     const [detailsOpen, setDetailsOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
-
     const [selectedLineupId, setSelectedLineupId] = useState(null);
-
-    const [deleteDialog, setDeleteDialog] = useState({
-        open: false,
-        lineup: null,
-    });
+    const [deleteDialog, setDeleteDialog] = useState(CLOSED_DELETE_DIALOG);
 
     async function loadData() {
         try {
             setLoading(true);
-            const [lineupsRes, rolesRes] = await Promise.all([
-                getLineups(bandId),
-                getRoles(),
-            ]);
-
-            setLineups(lineupsRes);
-            setRoles(rolesRes);
+            setLineups(await lineupService.listByBand(bandId));
         } catch (e) {
             console.error("Erro ao carregar lineups:", e);
         } finally {
@@ -55,9 +48,8 @@ export default function Lineups() {
         if (!lineup) return;
 
         try {
-            await deleteLineup(lineup.id);
+            await lineupService.delete(lineup.id);
             await loadData();
-
             setDetailsOpen(false);
             setSelectedLineupId(null);
         } catch (err) {
@@ -65,25 +57,31 @@ export default function Lineups() {
         }
     }
 
+    /*
+     * ♻️ REFACTORING — Extract Method (openDetails / closeDeleteDialog)
+     * Antes: os setState de abrir detalhes e de fechar o diálogo estavam
+     * escritos inline no JSX (o de fechar, 2 vezes).
+     * Benefícios: - Duplicação  + Legibilidade do JSX
+     */
+    function openDetails(lineupId) {
+        setSelectedLineupId(lineupId);
+        setDetailsOpen(true);
+    }
+
+    function closeDeleteDialog() {
+        setDeleteDialog(CLOSED_DELETE_DIALOG);
+    }
+
     if (loading) {
-        return (
-            <div className="text-gray-300 text-center p-6">
-                Carregando formações.
-            </div>
-        );
+        return <div className="text-gray-300 text-center p-6">Carregando formações.</div>;
     }
 
     return (
         <div className="space-y-6">
-            {/* HEADER */}
             <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="text-2xl font-semibold text-gray-200">
-                        Formações
-                    </h1>
-                    <p className="text-gray-400 text-sm">
-                        Monte e gerencie as formações da banda.
-                    </p>
+                    <h1 className="text-2xl font-semibold text-gray-200">Formações</h1>
+                    <p className="text-gray-400 text-sm">Monte e gerencie as formações da banda.</p>
                 </div>
 
                 <button
@@ -95,41 +93,25 @@ export default function Lineups() {
                 </button>
             </div>
 
-            {/* LISTA DE CARDS */}
             {lineups.length === 0 ? (
-                <p className="text-gray-400">
-                    Nenhuma formação criada ainda.
-                </p>
+                <p className="text-gray-400">Nenhuma formação criada ainda.</p>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                     {lineups.map((lineup) => (
                         <div
                             key={lineup.id}
-                            onClick={() => {
-                                setSelectedLineupId(lineup.id);
-                                setDetailsOpen(true);
-                            }}
+                            onClick={() => openDetails(lineup.id)}
                             className="cursor-pointer bg-[#1b1b1f] border border-[#29292e] rounded-xl p-5 shadow-lg hover:shadow-xl hover:border-[#7c5fff] transition relative"
                         >
-                            <h2 className="text-lg font-semibold text-gray-100">
-                                {lineup.name}
-                            </h2>
-                            <p className="text-xs text-gray-500 mt-1">
-                                {(lineup.roles?.length ?? 0)} papel(éis)
-                            </p>
+                            <h2 className="text-lg font-semibold text-gray-100">{lineup.name}</h2>
+                            <p className="text-xs text-gray-500 mt-1">{lineup.roleCount} papel(éis)</p>
                         </div>
                     ))}
                 </div>
             )}
 
-            {/* MODAL DE CRIAÇÃO */}
-            <LineupCreateModal
-                open={createOpen}
-                onClose={() => setCreateOpen(false)}
-                onCreated={loadData}
-            />
+            <LineupCreateModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={loadData} />
 
-            {/* MODAL DE DETALHES */}
             {selectedLineupId && (
                 <LineupDetailsModal
                     open={detailsOpen}
@@ -139,27 +121,21 @@ export default function Lineups() {
                         setSelectedLineupId(lineup.id);
                         setEditOpen(true);
                     }}
-                    onDelete={(lineup) => {
-                        setDeleteDialog({ open: true, lineup });
-                    }}
+                    onDelete={(lineup) => setDeleteDialog({ open: true, lineup })}
                 />
             )}
 
-            {/* CONFIRMAR EXCLUSÃO */}
             <ConfirmDialog
                 open={deleteDialog.open}
                 title="Excluir Formação"
                 message={`Tem certeza que deseja excluir a formação "${deleteDialog.lineup?.name}"?`}
                 onConfirm={() => {
                     handleDeleteLineup(deleteDialog.lineup);
-                    setDeleteDialog({ open: false, lineup: null });
+                    closeDeleteDialog();
                 }}
-                onCancel={() =>
-                    setDeleteDialog({ open: false, lineup: null })
-                }
+                onCancel={closeDeleteDialog}
             />
 
-            {/* MODAL DE EDIÇÃO */}
             {selectedLineupId && (
                 <LineupEditModal
                     open={editOpen}
@@ -171,7 +147,6 @@ export default function Lineups() {
                         setDetailsOpen(false);
                     }}
                 />
-
             )}
         </div>
     );

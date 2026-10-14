@@ -1,91 +1,22 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getBands, createBand, joinBand } from '../../services/bandApi'
 import { Music } from 'lucide-react'
 import Button from '../../components/Button.jsx'
+import { bandService } from '../../services/index.js'
+import { bandSession } from '../../core/session/BandSession.js'
+import { MembershipRole } from '../../domain/MembershipRole.js'
 
-export default function BandSelect() {
-    const [bands, setBands] = useState([])
-    const [newBandName, setNewBandName] = useState('')
-    const [joinCode, setJoinCode] = useState('')
-    const [loading, setLoading] = useState(false)
-    const navigate = useNavigate()
-
-    async function loadBands() {
-        try {
-            const result = await getBands()
-            setBands(result)
-        } catch (err) {
-            console.error('Erro ao carregar bandas:', err)
-        }
-    }
-
-    useEffect(() => { loadBands() }, [])
-
-    // ===============================================================
-    // 📌 Salva no localStorage a role e o id da banda selecionada
-    // ===============================================================
-    function enterBand(integration) {
-        const bandId = integration.band.id
-        const bandRole = integration.type  // ADMIN, MEMBER, OBSERVER
-        const bandName = integration.band.name
-
-        localStorage.setItem("bandId", bandId)
-        localStorage.setItem("bandRole", bandRole)
-        localStorage.setItem("bandName", bandName)
-
-        // redireciona para a home da banda
-        navigate(`/bands/${bandId}/home`)
-    }
-
-    async function handleCreateBand(e) {
-        e.preventDefault()
-        if (!newBandName) return
-        setLoading(true)
-
-        try {
-            const band = await createBand({ name: newBandName })
-
-            // salva role ADMIN automaticamente para quem criou a banda
-            localStorage.setItem("bandId", band.id)
-            localStorage.setItem("bandRole", "ADMIN")
-            localStorage.setItem("bandName", band.name)
-
-            // atualiza lista
-            await loadBands()
-
-            navigate(`/bands/${band.id}/home`)
-        } catch (err) {
-            console.error('Erro ao criar banda:', err)
-            alert('Erro ao criar banda.')
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    async function handleJoinBand(e) {
-        e.preventDefault()
-        if (!joinCode) return
-        setLoading(true)
-
-        try {
-            const membership = await joinBand(joinCode)
-
-            // membership retorna a integração criada → salvamos a role
-            localStorage.setItem("bandId", membership.bandId)
-            localStorage.setItem("bandRole", membership.type)
-            localStorage.setItem("bandName", membership.bandName)
-
-            navigate(`/bands/${membership.bandId}/repertoires`)
-        } finally {
-            setLoading(false)
-        }
-    }
-
+/*
+ * ♻️ REFACTORING — Extract Method (FloatingNotes)
+ * Antes: o fundo animado (15 notas + keyframes CSS) ocupava ~40 linhas no
+ * meio do JSX da tela de seleção, misturado com a lógica de bandas.
+ * Benefícios:
+ *   + Legibilidade (a tela mostra só o que importa)
+ *   + Coesão (efeito visual isolado)
+ */
+function FloatingNotes() {
     return (
-        <div className="relative min-h-screen flex flex-col items-center py-20 px-6 text-gray-100 bg-[#0e0e10] overflow-hidden">
-
-            {/* Fundo animado */}
+        <>
             <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
                 {[...Array(15)].map((_, i) => (
                     <span
@@ -103,6 +34,107 @@ export default function BandSelect() {
                     </span>
                 ))}
             </div>
+            <style>{`
+                @keyframes float {
+                    0% { transform: translateY(0px) rotate(0deg); opacity: 0.1; }
+                    50% { opacity: 0.25; }
+                    100% { transform: translateY(-200px) rotate(10deg); opacity: 0.1; }
+                }
+                .animate-float {
+                    animation-name: float;
+                    animation-timing-function: ease-in-out;
+                    animation-iteration-count: infinite;
+                }
+            `}</style>
+        </>
+    )
+}
+
+/*
+ * ♻️ REFACTORING — Extract Variable (CARD_CLASS / INPUT_CLASS)
+ * Antes: as mesmas strings longas de classes Tailwind eram repetidas nos
+ * dois cards e nos dois inputs.
+ * Benefícios:
+ *   - Duplicação
+ *   + Consistência visual
+ */
+const CARD_CLASS = 'bg-gradient-to-br from-[#1b1b1f] to-[#131316] border border-[#2a2a30] rounded-2xl p-6 shadow-[0_0_25px_rgba(124,95,255,0.1)] backdrop-blur-md'
+const INPUT_CLASS = 'flex-1 bg-[#1b1b1f] border border-[#2a2a30] rounded-lg p-2 text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-[#7c5fff] outline-none'
+
+export default function BandSelect() {
+    const [bands, setBands] = useState([])
+    const [newBandName, setNewBandName] = useState('')
+    const [joinCode, setJoinCode] = useState('')
+    const [loading, setLoading] = useState(false)
+    const navigate = useNavigate()
+
+    async function loadBands() {
+        try {
+            setBands(await bandService.list())
+        } catch (err) {
+            console.error('Erro ao carregar bandas:', err)
+        }
+    }
+
+    useEffect(() => { loadBands() }, [])
+
+    /*
+     * ♻️ REFACTORING — Extract Method (openBand) + Move Method (BandSession.enter)
+     * Antes: enterBand, handleCreateBand e handleJoinBand repetiam o mesmo
+     * trio de localStorage.setItem("bandId"/"bandRole"/"bandName") + navigate.
+     * Agora: um método recebe os dados normalizados e delega a gravação para
+     * a sessão da banda.
+     * Benefícios:
+     *   - Duplicação (3 blocos → 1 chamada)
+     *   - Acoplamento (com localStorage)
+     *   + Coesão
+     */
+    function openBand({ id, role, name }, page = 'home') {
+        bandSession.enter({ id, role, name })
+        navigate(`/bands/${id}/${page}`)
+    }
+
+    function enterBand(integration) {
+        openBand({ id: integration.band.id, role: integration.type, name: integration.band.name })
+    }
+
+    async function handleCreateBand(e) {
+        e.preventDefault()
+        if (!newBandName) return
+        setLoading(true)
+
+        try {
+            const band = await bandService.create({ name: newBandName })
+            await loadBands()
+            // quem cria a banda vira ADMIN automaticamente
+            openBand({ id: band.id, role: MembershipRole.ADMIN.type, name: band.name })
+        } catch (err) {
+            console.error('Erro ao criar banda:', err)
+            alert('Erro ao criar banda.')
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    async function handleJoinBand(e) {
+        e.preventDefault()
+        if (!joinCode) return
+        setLoading(true)
+
+        try {
+            const membership = await bandService.join(joinCode)
+            openBand(
+                { id: membership.bandId, role: membership.type, name: membership.bandName },
+                'repertoires'
+            )
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    return (
+        <div className="relative min-h-screen flex flex-col items-center py-20 px-6 text-gray-100 bg-[#0e0e10] overflow-hidden">
+            <FloatingNotes />
 
             <div className="absolute top-0 left-0 w-full h-[400px] bg-gradient-to-b from-[#7c5fff33] to-transparent blur-3xl opacity-40"></div>
 
@@ -118,7 +150,7 @@ export default function BandSelect() {
             <div className="relative grid grid-cols-1 md:grid-cols-2 gap-10 w-full max-w-5xl z-10">
 
                 {/* MINHAS BANDAS */}
-                <div className="bg-gradient-to-br from-[#1b1b1f] to-[#131316] border border-[#2a2a30] rounded-2xl p-6 shadow-[0_0_25px_rgba(124,95,255,0.1)] backdrop-blur-md">
+                <div className={CARD_CLASS}>
                     <h2 className="text-xl font-semibold mb-5 flex items-center gap-2">
                         <Music className="text-[#7c5fff]" /> Minhas Bandas
                     </h2>
@@ -139,17 +171,13 @@ export default function BandSelect() {
                                         <span className="text-gray-100 font-medium">
                                             {integration.band.name}
                                         </span>
+                                        {/*
+                                          ♻️ REFACTORING — Extract Class (MembershipRole)
+                                          Antes: ternário de 4 níveis para traduzir o tipo.
+                                          Benefícios: - Complexidade  - Duplicação  + Legibilidade
+                                        */}
                                         <span className="text-xs text-gray-400">
-                                            Papel: {
-                                            integration.type === 'ADMIN'
-                                                ? 'Administrador'
-                                                : integration.type === 'MEMBER'
-                                                    ? 'Membro'
-                                                    : integration.type === 'OBSERVER'
-                                                        ? 'Observador'
-                                                        : 'Desconhecido'
-                                        }
-
+                                            Papel: {MembershipRole.from(integration.type).label}
                                         </span>
                                     </div>
                                 </li>
@@ -159,12 +187,12 @@ export default function BandSelect() {
                 </div>
 
                 {/* CRIAR / ENTRAR */}
-                <div className="bg-gradient-to-br from-[#1b1b1f] to-[#131316] border border-[#2a2a30] rounded-2xl p-6 shadow-[0_0_25px_rgba(124,95,255,0.1)] backdrop-blur-md">
+                <div className={CARD_CLASS}>
                     <h2 className="text-xl font-semibold mb-5 text-gray-100">Nova Banda</h2>
 
                     <form onSubmit={handleCreateBand} className="flex gap-2 mb-6">
                         <input
-                            className="flex-1 bg-[#1b1b1f] border border-[#2a2a30] rounded-lg p-2 text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-[#7c5fff] outline-none"
+                            className={INPUT_CLASS}
                             placeholder="Nome da banda"
                             value={newBandName}
                             onChange={(e) => setNewBandName(e.target.value)}
@@ -178,29 +206,15 @@ export default function BandSelect() {
 
                     <form onSubmit={handleJoinBand} className="flex gap-2">
                         <input
-                            className="flex-1 bg-[#1b1b1f] border border-[#2a2a30] rounded-lg p-2 text-gray-100 placeholder-gray-500 focus:ring-2 focus:ring-[#7c5fff] outline-none"
+                            className={INPUT_CLASS}
                             placeholder="Código da banda"
                             value={joinCode}
                             onChange={(e) => setJoinCode(e.target.value)}
                         />
                         <Button variant="outline" disabled={loading}>Entrar</Button>
                     </form>
-
                 </div>
             </div>
-
-            <style>{`
-                @keyframes float {
-                    0% { transform: translateY(0px) rotate(0deg); opacity: 0.1; }
-                    50% { opacity: 0.25; }
-                    100% { transform: translateY(-200px) rotate(10deg); opacity: 0.1; }
-                }
-                .animate-float {
-                    animation-name: float;
-                    animation-timing-function: ease-in-out;
-                    animation-iteration-count: infinite;
-                }
-            `}</style>
         </div>
     )
 }

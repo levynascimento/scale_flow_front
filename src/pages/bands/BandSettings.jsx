@@ -1,15 +1,25 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import {
-    getBandWithJoinCode,
-    updateBand,
-    regenerateJoinCode,
-    deleteBand
-} from "../../services/bandApi.js";
 import toast from "react-hot-toast";
 import Input from "../../components/Input.jsx";
 import Button from "../../components/Button.jsx";
 import ConfirmDialog from "../../components/ConfirmDialog.jsx";
+import { bandService } from "../../services/index.js";
+
+const MASKED_CODE = "••••••••";
+
+/*
+ * ♻️ REFACTORING — Extract Method (displayedJoinCode)
+ * Antes: um ternário aninhado de 2 níveis dentro da prop `value` do Input.
+ * Benefícios:
+ *   + Legibilidade
+ *   - Complexidade no JSX
+ *   + Testabilidade
+ */
+function displayedJoinCode(joinCode, visible) {
+    if (!joinCode) return "";
+    return visible ? joinCode : MASKED_CODE;
+}
 
 export default function BandSettings() {
     const { id } = useParams();
@@ -17,9 +27,18 @@ export default function BandSettings() {
     const [band, setBand] = useState(null);
     const [name, setName] = useState("");
     const [showJoinCode, setShowJoinCode] = useState(false);
-
     const [confirmOpen, setConfirmOpen] = useState(false);
-    const [deleting, setDeleting] = useState(false);
+
+    /*
+     * ♻️ REFACTORING — Inline Variable (deleting)
+     * Antes: existia o estado `deleting`, que era atualizado (true/false) mas
+     * nunca lido em lugar nenhum: uma variável que não carregava informação.
+     * Agora: foi removida.
+     * Benefícios:
+     *   - Código morto
+     *   - Renders desnecessários
+     *   + Legibilidade
+     */
 
     useEffect(() => {
         loadBand();
@@ -27,7 +46,7 @@ export default function BandSettings() {
 
     async function loadBand() {
         try {
-            const b = await getBandWithJoinCode(id);
+            const b = await bandService.getWithJoinCode(id);
             setBand(b);
             setName(b.name);
         } catch {
@@ -37,7 +56,7 @@ export default function BandSettings() {
 
     async function handleSave() {
         try {
-            await updateBand(id, { name });
+            await bandService.update(id, { name });
             toast.success("Dados atualizados!");
             await loadBand();
         } catch {
@@ -47,7 +66,7 @@ export default function BandSettings() {
 
     async function handleRegen() {
         try {
-            await regenerateJoinCode(id);
+            await bandService.regenerateJoinCode(id);
             toast.success("Código regenerado!");
             setShowJoinCode(false);
             await loadBand();
@@ -62,19 +81,14 @@ export default function BandSettings() {
         toast.success("Código copiado!");
     }
 
-    // 🔴 CONFIRMAÇÃO REAL (não usa alert)
     async function handleConfirmDelete() {
         try {
-            setDeleting(true);
-            await deleteBand(id);
+            await bandService.delete(id);
             toast.success("Banda deletada!");
             window.location.href = "/bands/select";
         } catch {
-            toast.error(
-                "Erro ao deletar banda. Verifique se não existem dados vinculados."
-            );
+            toast.error("Erro ao deletar banda. Verifique se não existem dados vinculados.");
         } finally {
-            setDeleting(false);
             setConfirmOpen(false);
         }
     }
@@ -91,16 +105,9 @@ export default function BandSettings() {
             <div className="bg-sf-card p-6 rounded-xl border border-sf-border space-y-4">
                 <h2 className="text-xl font-semibold">Dados Básicos</h2>
 
-                <Input
-                    label="Nome da Banda"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                />
+                <Input label="Nome da Banda" value={name} onChange={(e) => setName(e.target.value)} />
 
-                <Button
-                    className="mt-2 bg-sf-primary hover:bg-sf-primary/80"
-                    onClick={handleSave}
-                >
+                <Button className="mt-2 bg-sf-primary hover:bg-sf-primary/80" onClick={handleSave}>
                     Salvar Alterações
                 </Button>
             </div>
@@ -113,17 +120,7 @@ export default function BandSettings() {
                     Compartilhe este código com usuários para que entrem na banda.
                 </p>
 
-                <Input
-                    label="Join Code"
-                    value={
-                        showJoinCode
-                            ? band.joinCode || ""
-                            : band.joinCode
-                                ? "••••••••"
-                                : ""
-                    }
-                    disabled
-                />
+                <Input label="Join Code" value={displayedJoinCode(band.joinCode, showJoinCode)} disabled />
 
                 <div className="flex gap-3 flex-wrap">
                     <Button
@@ -133,17 +130,11 @@ export default function BandSettings() {
                         {showJoinCode ? "Ocultar Código" : "Mostrar Código"}
                     </Button>
 
-                    <Button
-                        className="bg-sf-primary hover:bg-sf-primary/80"
-                        onClick={handleCopyCode}
-                    >
+                    <Button className="bg-sf-primary hover:bg-sf-primary/80" onClick={handleCopyCode}>
                         Copiar Código
                     </Button>
 
-                    <Button
-                        className="bg-blue-600 hover:bg-blue-700"
-                        onClick={handleRegen}
-                    >
+                    <Button className="bg-blue-600 hover:bg-blue-700" onClick={handleRegen}>
                         Regenerar Código
                     </Button>
                 </div>
@@ -151,19 +142,13 @@ export default function BandSettings() {
 
             {/* ZONA DE PERIGO */}
             <div className="bg-sf-card p-6 rounded-xl border border-red-800/40 space-y-4">
-                <h2 className="text-xl font-semibold text-red-400">
-                    Zona de Perigo
-                </h2>
+                <h2 className="text-xl font-semibold text-red-400">Zona de Perigo</h2>
 
-                <Button
-                    className="bg-red-600 hover:bg-red-700"
-                    onClick={() => setConfirmOpen(true)}
-                >
+                <Button className="bg-red-600 hover:bg-red-700" onClick={() => setConfirmOpen(true)}>
                     Deletar Banda
                 </Button>
             </div>
 
-            {/* CONFIRM DIALOG */}
             <ConfirmDialog
                 open={confirmOpen}
                 title="Deletar Banda"

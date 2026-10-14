@@ -1,46 +1,73 @@
 import { useEffect, useState } from "react";
-import {
-    getCurrentUser,
-    updateUser,
-    updatePassword,
-    deleteUser,
-    getUserHabilities,
-    addUserHability,
-    updateUserHability,
-    deleteUserHability
-} from "../../services/userApi.js";
-import { getRoles } from "../../services/rolesApi";
+import { NavLink } from "react-router-dom";
+import { FiArrowLeft } from "react-icons/fi";
 import toast from "react-hot-toast";
 import Button from "../../components/Button.jsx";
 import Input from "../../components/Input.jsx";
 import ConfirmDialog from "../../components/ConfirmDialog.jsx";
-import { NavLink } from "react-router-dom";
-import { FiArrowLeft } from "react-icons/fi";
+import { roleService, userService } from "../../services/index.js";
+import { RoleService } from "../../services/RoleService.js";
+import { authSession } from "../../core/session/AuthSession.js";
+import { bandSession } from "../../core/session/BandSession.js";
+import { SkillLevel } from "../../domain/SkillLevel.js";
+
+/*
+ * ♻️ REFACTORING — Extract Method (toLevelInputs)
+ * Antes: o bloco
+ *   const mapped = {}; habs.forEach(h => (mapped[h.roleSlug] = h.level.toString()));
+ * era copiado no carregamento inicial e de novo depois de adicionar.
+ * Benefícios: - Duplicação  + Legibilidade  + Testabilidade
+ */
+function toLevelInputs(skills) {
+    return Object.fromEntries(skills.map(s => [s.roleSlug, s.level.toString()]));
+}
+
+/*
+ * ♻️ REFACTORING — Extract Method (componente SettingsCard)
+ * Antes: 4 blocos <div className="bg-sf-card p-6 rounded-xl border ...">
+ * com <h2> repetidos em volta de cada seção.
+ * Benefícios: - Duplicação  + Consistência visual
+ */
+function SettingsCard({ title, danger = false, children }) {
+    return (
+        <div className={`bg-sf-card p-6 rounded-xl border space-y-4 ${danger ? "border-red-900/50" : "border-sf-border"}`}>
+            <h2 className={`text-xl font-semibold ${danger ? "text-red-400" : ""}`}>{title}</h2>
+            {children}
+        </div>
+    );
+}
 
 export default function UserSettings() {
-    const bandId = localStorage.getItem("bandId");
+    const bandId = bandSession.bandId;
 
     const [user, setUser] = useState(null);
     const [name, setName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
-
-    // CONFIRM DELETE
     const [confirmOpen, setConfirmOpen] = useState(false);
-    const [deleting, setDeleting] = useState(false);
 
-    // --- HABILIDADES ---
-    const [habilities, setHabilities] = useState([]);
+    /*
+     * ♻️ REFACTORING — Rename Variable (habilities → skills)
+     * Antes: habilities, newLevel, levelInputs... "hability" não existe em
+     * inglês. Os nomes no frontend passaram a usar "skill".
+     * Benefícios: + Legibilidade  + Expressividade
+     */
+    const [skills, setSkills] = useState([]);
     const [roles, setRoles] = useState([]);
-    const [newRole, setNewRole] = useState("");
+    const [newRoleSlug, setNewRoleSlug] = useState("");
     const [newLevel, setNewLevel] = useState("");
     const [levelInputs, setLevelInputs] = useState({});
 
-    // ------------------------------------------
+    /*
+     * ♻️ REFACTORING — Inline Variable (deleting)
+     * Antes: o estado `deleting` era atualizado mas nunca lido.
+     * Benefícios: - Código morto  - Renders desnecessários
+     */
+
     useEffect(() => {
-        async function load() {
+        async function loadUser() {
             try {
-                const u = await getCurrentUser();
+                const u = await userService.getCurrent();
                 setUser(u);
                 setName(u.name);
                 setEmail(u.email);
@@ -48,20 +75,42 @@ export default function UserSettings() {
                 toast.error("Erro ao carregar dados do usuário.");
             }
         }
-        load();
+        loadUser();
     }, []);
 
-    // ------------------------------------------
+    /*
+     * ♻️ REFACTORING — Extract Method (applySkills)
+     * Antes: setHabilities + montagem do mapa + setLevelInputs repetidos no
+     * carregamento e após adicionar.
+     * Benefícios: - Duplicação  + Consistência
+     */
+    function applySkills(list) {
+        setSkills(list);
+        setLevelInputs(toLevelInputs(list));
+    }
+
+    useEffect(() => {
+        async function loadSkills() {
+            try {
+                const [list, allRoles] = await Promise.all([userService.listSkills(), roleService.list()]);
+                applySkills(list);
+                setRoles(allRoles);
+            } catch {
+                toast.error("Erro ao carregar habilidades.");
+            }
+        }
+        loadSkills();
+    }, []);
+
     async function handleUpdateUser() {
         try {
-            await updateUser({ name, email });
+            await userService.update({ name, email });
             toast.success("Dados atualizados!");
         } catch {
             toast.error("Erro ao atualizar usuário.");
         }
     }
 
-    // ------------------------------------------
     async function handleChangePassword() {
         if (!password.trim()) {
             toast.error("A senha não pode ser vazia.");
@@ -69,7 +118,7 @@ export default function UserSettings() {
         }
 
         try {
-            await updatePassword(password);
+            await userService.updatePassword(password);
             toast.success("Senha alterada!");
             setPassword("");
         } catch {
@@ -77,124 +126,114 @@ export default function UserSettings() {
         }
     }
 
-    // ------------------------------------------
     async function handleConfirmDeleteAccount() {
         try {
-            setDeleting(true);
-            await deleteUser();
+            await userService.delete();
             toast.success("Conta deletada!");
-            localStorage.clear();
-            window.location.href = "/auth/login";
+            /*
+             * ♻️ REFACTORING — Move Method (localStorage.clear → sessões)
+             * Antes: `localStorage.clear()` apagava TUDO do domínio, inclusive
+             * dados que não pertencem à sessão.
+             * Agora: cada sessão limpa só o que é dela.
+             * Benefícios: + Encapsulamento  - Efeitos colaterais
+             */
+            bandSession.leave();
+            authSession.endSession();
         } catch {
             toast.error("Erro ao deletar conta.");
         } finally {
-            setDeleting(false);
             setConfirmOpen(false);
         }
     }
 
-    // =============== HABILIDADES ===============
-    useEffect(() => {
-        async function loadHabilitiesData() {
-            try {
-                const habs = await getUserHabilities();
-                setHabilities(habs);
+    /*
+     * ♻️ REFACTORING — Extract Method (hasSkill / roleNameBySlug)
+     * Antes: `habilities.some(h => h.roleSlug === x)` aparecia 2x e
+     * `roles.find(r => r.slug === roleSlug)` aparecia 3x.
+     * Benefícios: - Duplicação  + Legibilidade
+     */
+    const hasSkill = (slug) => skills.some(s => s.roleSlug === slug);
+    const roleNameBySlug = (slug) => RoleService.findBySlug(roles, slug)?.name;
 
-                const mapped = {};
-                habs.forEach(h => (mapped[h.roleSlug] = h.level.toString()));
-                setLevelInputs(mapped);
+    /*
+     * ♻️ REFACTORING — Extract Method (validateNewSkill) + Extract Class (SkillLevel)
+     * Antes: 4 ifs de validação no início do handleAddHability, incluindo a
+     * regra "entre 0 e 10" escrita à mão.
+     * Agora: a validação é um método que devolve a mensagem de erro (ou null),
+     * e a regra do intervalo vem de SkillLevel.
+     * Benefícios: + Legibilidade  + Coesão  - Duplicação  - Magic numbers
+     */
+    function validateNewSkill() {
+        if (!newRoleSlug) return "Selecione um papel.";
+        if (newLevel === "") return "Informe um nível.";
+        if (SkillLevel.parse(newLevel) === null) return `O nível deve ser entre ${SkillLevel.rangeLabel}.`;
+        if (hasSkill(newRoleSlug)) return "Você já cadastrou essa habilidade.";
+        return null;
+    }
 
-                const r = await getRoles();
-                setRoles(r);
-            } catch {
-                toast.error("Erro ao carregar habilidades.");
-            }
-        }
-
-        loadHabilitiesData();
-    }, []);
-
-    // ------------------------------------------
-    async function handleAddHability() {
-        if (!newRole) {
-            toast.error("Selecione um papel.");
-            return;
-        }
-
-        if (newLevel === "") {
-            toast.error("Informe um nível.");
-            return;
-        }
-
-        const parsedLevel = Number(newLevel);
-        if (parsedLevel < 0 || parsedLevel > 10) {
-            toast.error("O nível deve ser entre 0 e 10.");
-            return;
-        }
-
-        if (habilities.some(h => h.roleSlug === newRole)) {
-            toast.error("Você já cadastrou essa habilidade.");
+    async function handleAddSkill() {
+        const error = validateNewSkill();
+        if (error) {
+            toast.error(error);
             return;
         }
 
         try {
-            const role = roles.find(r => r.slug === newRole);
-            await addUserHability(role.name, parsedLevel);
-
+            await userService.addSkill(roleNameBySlug(newRoleSlug), SkillLevel.parse(newLevel));
             toast.success("Habilidade adicionada!");
-
-            const habs = await getUserHabilities();
-            setHabilities(habs);
-
-            const mapped = {};
-            habs.forEach(h => (mapped[h.roleSlug] = h.level.toString()));
-            setLevelInputs(mapped);
-
-            setNewRole("");
+            applySkills(await userService.listSkills());
+            setNewRoleSlug("");
             setNewLevel("");
         } catch {
             toast.error("Erro ao adicionar habilidade.");
         }
     }
 
-    // ------------------------------------------
-    async function handleUpdate(level, roleSlug) {
+    async function handleUpdateSkill(level, roleSlug) {
         try {
-            const role = roles.find(r => r.slug === roleSlug);
-            await updateUserHability(role.name, level);
+            await userService.updateSkill(roleNameBySlug(roleSlug), level);
             toast.success("Nível atualizado!");
         } catch {
             toast.error("Erro ao atualizar habilidade.");
         }
     }
 
-    // ------------------------------------------
-    async function handleDelete(roleSlug) {
+    async function handleRemoveSkill(roleSlug) {
         try {
-            const role = roles.find(r => r.slug === roleSlug);
-            await deleteUserHability(role.name);
-
-            const updated = habilities.filter(h => h.roleSlug !== roleSlug);
-            setHabilities(updated);
-
-            setLevelInputs(prev => {
-                const clone = { ...prev };
-                delete clone[roleSlug];
-                return clone;
-            });
-
+            await userService.removeSkill(roleNameBySlug(roleSlug));
+            applySkills(skills.filter(s => s.roleSlug !== roleSlug));
             toast.success("Habilidade removida!");
         } catch {
             toast.error("Erro ao remover habilidade.");
         }
     }
 
+    /*
+     * ♻️ REFACTORING — Extract Method (handleLevelTyping / handleLevelBlur)
+     * Antes: os handlers onChange e onBlur do campo de nível eram arrow
+     * functions de 8–12 linhas escritas dentro do JSX.
+     * Benefícios: + Legibilidade do JSX  + Testabilidade
+     */
+    function handleLevelTyping(roleSlug, value) {
+        if (SkillLevel.isTypingAllowed(value)) {
+            setLevelInputs(prev => ({ ...prev, [roleSlug]: value }));
+        }
+    }
+
+    function handleLevelBlur(skill) {
+        const level = SkillLevel.parse(levelInputs[skill.roleSlug]);
+        if (level === null) {
+            // valor inválido: volta para o último nível salvo
+            setLevelInputs(prev => ({ ...prev, [skill.roleSlug]: skill.level.toString() }));
+            return;
+        }
+        handleUpdateSkill(level, skill.roleSlug);
+    }
+
     if (!user) return <div className="p-8 text-gray-300">Carregando...</div>;
 
     return (
         <div className="p-8 space-y-10">
-
-            {/* BOTÃO DE VOLTAR */}
             <div className="mb-4">
                 <NavLink
                     to={`/bands/${bandId}/home`}
@@ -209,149 +248,85 @@ export default function UserSettings() {
 
             <h1 className="text-3xl font-bold">Configurações da Conta</h1>
 
-            {/* DADOS DO USUÁRIO */}
-            <div className="bg-sf-card p-6 rounded-xl border border-sf-border space-y-4">
-                <h2 className="text-xl font-semibold">Dados do Usuário</h2>
-
+            <SettingsCard title="Dados do Usuário">
                 <Input label="Nome" value={name} onChange={(e) => setName(e.target.value)} />
                 <Input label="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-
                 <Button className="mt-2 bg-sf-primary hover:bg-sf-primary/80" onClick={handleUpdateUser}>
                     Salvar Alterações
                 </Button>
-            </div>
+            </SettingsCard>
 
-            {/* SENHA */}
-            <div className="bg-sf-card p-6 rounded-xl border border-sf-border space-y-4">
-                <h2 className="text-xl font-semibold">Alterar Senha</h2>
-
-                <Input
-                    label="Nova Senha"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                />
-
+            <SettingsCard title="Alterar Senha">
+                <Input label="Nova Senha" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
                 <Button className="mt-2 bg-blue-600 hover:bg-blue-700" onClick={handleChangePassword}>
                     Atualizar Senha
                 </Button>
-            </div>
+            </SettingsCard>
 
-            {/* HABILIDADES */}
-            <div className="bg-sf-card p-6 rounded-xl border border-sf-border space-y-6">
-                <h2 className="text-xl font-semibold">Minhas Habilidades</h2>
-
-                {/* ADICIONAR HABILIDADE */}
+            <SettingsCard title="Minhas Habilidades">
                 <div className="flex flex-wrap gap-4 items-end">
-
-                    {/* PAPEL */}
                     <div className="flex flex-col gap-1">
-                        <label className="text-sm text-gray-400 h-5">
-                            Papel
-                        </label>
+                        <label className="text-sm text-gray-400 h-5">Papel</label>
                         <select
-                            value={newRole}
-                            onChange={(e) => setNewRole(e.target.value)}
+                            value={newRoleSlug}
+                            onChange={(e) => setNewRoleSlug(e.target.value)}
                             className="px-3 py-2 rounded-lg bg-sf-surface border border-sf-border"
                         >
                             <option value="">Selecione</option>
                             {roles.map(r => (
-                                <option
-                                    key={r.id}
-                                    value={r.slug}
-                                    disabled={habilities.some(h => h.roleSlug === r.slug)}
-                                >
+                                <option key={r.id} value={r.slug} disabled={hasSkill(r.slug)}>
                                     {r.name}
                                 </option>
                             ))}
                         </select>
                     </div>
 
-                    {/* NÍVEL */}
                     <div className="flex flex-col gap-1">
-                        <label className="text-sm text-gray-400 h-5">
-                            Nível (0–10)
-                        </label>
-                        <Input
-                            type="number"
-                            className="w-32"
-                            value={newLevel}
-                            onChange={(e) => setNewLevel(e.target.value)}
-                        />
+                        <label className="text-sm text-gray-400 h-5">Nível ({SkillLevel.MIN}–{SkillLevel.MAX})</label>
+                        <Input type="number" className="w-32" value={newLevel} onChange={(e) => setNewLevel(e.target.value)} />
                     </div>
 
-                    {/* BOTÃO */}
-                    <Button
-                        className="bg-sf-primary hover:bg-sf-primary/80 h-[42px]"
-                        onClick={handleAddHability}
-                    >
+                    <Button className="bg-sf-primary hover:bg-sf-primary/80 h-[42px]" onClick={handleAddSkill}>
                         Adicionar
                     </Button>
                 </div>
 
-                {/* LISTA */}
                 <div className="space-y-4">
-                    {habilities.length === 0 && (
+                    {skills.length === 0 && (
                         <p className="text-gray-400">Você ainda não cadastrou habilidades.</p>
                     )}
 
-                    {habilities.map(h => (
+                    {skills.map(skill => (
                         <div
-                            key={h.id}
+                            key={skill.id}
                             className="p-4 rounded-lg bg-sf-surface border border-sf-border flex items-center justify-between"
                         >
                             <div className="space-y-2">
-                                <p className="font-semibold capitalize">{h.roleSlug}</p>
-
+                                <p className="font-semibold capitalize">{skill.roleSlug}</p>
                                 <Input
                                     label="Nível"
                                     type="text"
                                     inputMode="numeric"
                                     className="w-24"
-                                    value={levelInputs[h.roleSlug] ?? ""}
-                                    onChange={(e) => {
-                                        const val = e.target.value;
-                                        if (val === "" || /^\d{1,2}$/.test(val)) {
-                                            setLevelInputs(prev => ({ ...prev, [h.roleSlug]: val }));
-                                        }
-                                    }}
-                                    onBlur={() => {
-                                        const raw = levelInputs[h.roleSlug];
-                                        const nivel = Number(raw);
-                                        if (raw === "" || nivel < 0 || nivel > 10) {
-                                            setLevelInputs(prev => ({
-                                                ...prev,
-                                                [h.roleSlug]: h.level.toString()
-                                            }));
-                                            return;
-                                        }
-                                        handleUpdate(nivel, h.roleSlug);
-                                    }}
+                                    value={levelInputs[skill.roleSlug] ?? ""}
+                                    onChange={(e) => handleLevelTyping(skill.roleSlug, e.target.value)}
+                                    onBlur={() => handleLevelBlur(skill)}
                                 />
                             </div>
 
-                            <Button
-                                className="bg-red-600 hover:bg-red-700"
-                                onClick={() => handleDelete(h.roleSlug)}
-                            >
+                            <Button className="bg-red-600 hover:bg-red-700" onClick={() => handleRemoveSkill(skill.roleSlug)}>
                                 Remover
                             </Button>
                         </div>
                     ))}
                 </div>
-            </div>
+            </SettingsCard>
 
-            {/* ZONA DE PERIGO */}
-            <div className="bg-sf-card p-6 rounded-xl border border-red-900/50 space-y-4">
-                <h2 className="text-xl font-semibold text-red-400">Zona de Perigo</h2>
-
-                <Button
-                    className="bg-red-600 hover:bg-red-700"
-                    onClick={() => setConfirmOpen(true)}
-                >
+            <SettingsCard title="Zona de Perigo" danger>
+                <Button className="bg-red-600 hover:bg-red-700" onClick={() => setConfirmOpen(true)}>
                     Deletar Conta
                 </Button>
-            </div>
+            </SettingsCard>
 
             <ConfirmDialog
                 open={confirmOpen}
